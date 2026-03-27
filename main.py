@@ -19,9 +19,11 @@ import glob, shutil
 
 Device.pin_factory = LGPIOFactory()
 
-FIFO_PATH = "/tmp/trooper_led"
+FIFO_PATH = os.environ.get("LOCALCHAT_LED_FIFO", "/tmp/trooper_led")
 if not os.path.exists(FIFO_PATH):
     os.mkfifo(FIFO_PATH)
+
+CONFIG_DEST = "/home/mjw/Trooper/.localchat_config.json"
 
 BUTTON_PIN = 17
 LED_PIN = 18
@@ -36,13 +38,21 @@ session_active = [False]  # mutable shared state
 timeout_thread = None
 
 def sync_usb_config():
-    usb_matches = glob.glob("/media/mjw/TROOPER*/trooper_config.json")
-    if usb_matches:
+    """USB: prefer Localchat volume + localchat_config.json; legacy Trooper USB still works."""
+    patterns = [
+        "/media/mjw/LOCALCHAT*/localchat_config.json",
+        "/media/mjw/TROOPER*/trooper_config.json",
+    ]
+    for pat in patterns:
+        matches = glob.glob(pat)
+        if not matches:
+            continue
         try:
-            shutil.copy(usb_matches[0], "/home/mjw/Trooper/.trooper_config.json")
+            shutil.copy(matches[0], CONFIG_DEST)
             print("[Config] USB config copied successfully.")
         except Exception as e:
             print("[Config] Failed to copy USB config:", e)
+        return
 
 
 sync_usb_config()
@@ -155,7 +165,7 @@ def session_loop():
     if model_name:
         threading.Thread(target=spin_up_ollama, args=(model_name,), daemon=True).start()
 
-    print("[Trooper] Booting up.")
+    print("[Localchat] Booting up.")
     led_mode("blink")
     if greeting_msg:
         play_message(greeting_msg)
@@ -194,7 +204,7 @@ def end_session(msg):
     global client_proc
 
     if client_proc:
-        print("[Trooper] Session ended.")
+        print("[Localchat] Session ended.")
         client_proc.terminate()
         client_proc.wait()
         led_mode("off")

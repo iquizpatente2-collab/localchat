@@ -4,8 +4,20 @@ import pyaudio
 import errno
 import numpy as np
 
+# Primary config on device; legacy path still supported for existing installs.
+_LOCALCHAT_CONFIG = "/home/mjw/Trooper/.localchat_config.json"
+_LEGACY_CONFIG = "/home/mjw/Trooper/.trooper_config.json"
+
+
+def _config_candidates():
+    env = os.environ.get("LOCALCHAT_CONFIG", "").strip()
+    if env:
+        yield env
+    yield _LOCALCHAT_CONFIG
+    yield _LEGACY_CONFIG
+
+
 def load_config():
-    CONFIG_PATH = "/home/mjw/Trooper/.trooper_config.json"
     DEFAULTS = {
         "volume": 95,
         "mic_name": "USB Camera-B4.09.24.1: Audio",
@@ -25,16 +37,17 @@ def load_config():
     }
 
     try:
-        if os.path.exists(CONFIG_PATH):
+        for path in _config_candidates():
+            if not path or not os.path.exists(path):
+                continue
             try:
-                with open(CONFIG_PATH, "r") as f:
+                with open(path, "r") as f:
                     cfg = json.load(f)
-                    print("[Config] Loaded from file:", CONFIG_PATH)
+                    print("[Config] Loaded from file:", path)
                     return {**DEFAULTS, **cfg}
             except Exception as e:
-                print("[Config] Failed to load config, using defaults:", e)
-        else:
-            print("[Config] Config file not found, using defaults.")
+                print("[Config] Failed to load config, trying next:", path, e)
+        print("[Config] Config file not found, using defaults.")
     except Exception as e:
         print(f"[Config] Error loading config: {e}")
 
@@ -80,10 +93,14 @@ def find_device(target_name, is_input=True):
     print(f"[Device] No match for {'input' if is_input else 'output'} '{target_name}', using default.")
     return None
 
+def led_fifo_path():
+    return os.environ.get("LOCALCHAT_LED_FIFO", "/tmp/trooper_led")
+
+
 def led_request(mode):
-    """Send a blink mode to the trooper LED FIFO pipe."""
+    """Send a blink mode to the status LED FIFO pipe."""
     try:
-        fd = os.open("/tmp/trooper_led", os.O_WRONLY | os.O_NONBLOCK)
+        fd = os.open(led_fifo_path(), os.O_WRONLY | os.O_NONBLOCK)
         with os.fdopen(fd, "w") as fifo:
             fifo.write(mode + "\n")
     except OSError as e:

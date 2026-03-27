@@ -1,0 +1,29 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.env
+.env.*
+
+# Local runtime / generated RAG index (rebuild after clone)
+data/rag_store/
+
+# Vosk / Piper voice assets (large; download separately)
+models/
+vosk-model/
+voices/
+
+# Logs
+*.log
+client.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Nested clone / experiment
+ollama-langchain/

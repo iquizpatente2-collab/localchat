@@ -1,25 +1,31 @@
-# TrooperAI: Local Conversational AI for Raspberry Pi5
+# Localchat: Local Conversational AI for Raspberry Pi5
 
-The TrooperAI project was a test to see if I could build a low-latency, local (non-networked) voice assistant in Python for the Raspberry Pi. The system combines real-time speech recognition, LLM-based dialog, and high-quality TTS into a reactive system running on Raspberry Pi5.
+The **Localchat** project was a test to see if I could build a low-latency, local (non-networked) voice assistant in Python for the Raspberry Pi. The system combines real-time speech recognition, LLM-based dialog, and high-quality TTS into a reactive system running on Raspberry Pi5.
 
-The final device is housed in a Game 5 Pi retro arcade case. The AdaFruit arcade style LED button was integrated to provide feedback and control. USB ports are used for the camera/mic array (Playstation Eye) and speaker audio out. A USB flash drive is used for headless configuration. This ultimate plan is to integrate TrooperAI into a life-size Stormtrooper to bring him to life.
+The final device is housed in a Game 5 Pi retro arcade case. The AdaFruit arcade style LED button was integrated to provide feedback and control. USB ports are used for the camera/mic array (Playstation Eye) and speaker audio out. A USB flash drive is used for headless configuration. The original build targeted a life-size Stormtrooper prop; the codebase name is now **Localchat**.
+
+### Rename / compatibility (existing installs)
+
+- **Config file (Pi):** preferred path is `~/.localchat_config.json`. The loader still accepts **`~/.trooper_config.json`** if the new file is missing.
+- **USB override:** `LOCALCHAT*` volume + `localchat_config.json` is preferred; legacy **`TROOPER*` + `trooper_config.json`** is still detected and copied into `~/.localchat_config.json`.
+- **LED FIFO:** default stays **`/tmp/trooper_led`** for backward compatibility. To use a new path, set **`LOCALCHAT_LED_FIFO`** (same value for `main.py` and anything using `led_request()`).
 
 <img src="docs/system_pic1.jpg" alt="system_pic1" style="zoom:33%;" />
 
 ## Conclusion
 
-The project was a success. The streaming architecture was capable of providing low enough latency to make possible a reasonable conversation with TrooperAI. The `Gemma3:1b` and `Qwen2.5:0.5b` models provided acceptable performance. The Gemma3 model was able to provide a more direct, authoritarian persona, while Qwen2.5 was faster, but generally provided a more friendly interaction. The programmable `System Message` is key in tuning your desired personality. I decided on Vosk for STT, although I did extensive testing with faster-whisper. Piper gave excellent performance for TTS, and many voices are available.
+The project was a success. The streaming architecture was capable of providing low enough latency to make possible a reasonable conversation with Localchat. The `Gemma3:1b` and `Qwen2.5:0.5b` models provided acceptable performance. The Gemma3 model was able to provide a more direct, authoritarian persona, while Qwen2.5 was faster, but generally provided a more friendly interaction. The programmable `System Message` is key in tuning your desired personality. I decided on Vosk for STT, although I did extensive testing with faster-whisper. Piper gave excellent performance for TTS, and many voices are available.
 
 ## Features
 
 - Fully integrated into headless Raspberry Pi5-8Gb
 - No reliance on remote API calls or cloud providers
 - WebSocket client/server architecture with full-duplex mic/speaker support
-- Sentence streaming Speech-to-Text (STT) using lightweight Vosk model.  Support for any Vosk voice. Realistic Trooper voice achieved using stock Piper voice `en_US-danny-low.onnx`. Additional support for add-on voice effects.
+- Sentence streaming Speech-to-Text (STT) using lightweight Vosk model.  Support for any Vosk voice. Strong character voice achieved using stock Piper voice `en_US-danny-low.onnx`. Additional support for add-on voice effects.
 - Sentence-by-sentence streaming Text-to-Speech (TTS) using Piper
 - LLM inference is achieved locally using Ollama. Tested with two lightweight models: `gemma3:1b` and `qwen2.5:0.5b`
 - Configurable mic-mute mode for setup with a speaker and separate mic
-- JSON-based configuration file: `.trooper_config.json`
+- JSON-based configuration file: `.localchat_config.json` (legacy `.trooper_config.json` still supported on device)
 - Configurable device names (mic and speaker)
 - Arcade style lighted button for visual feedback and control. The large LED provides feedback (listening / speaking / thinking) and a push button to start or stop sessions as an alternative to gesture detection mode.
 - Detection and elimination of false low-energy utterances
@@ -42,7 +48,7 @@ Over a large number of dialog samples, the following average timings were record
 
 Note that neither the Vosk STT (input) nor Piper TTS (output) were designed for true token by token streaming. I had to modify the system to detect sentence breaks via punctuation and silence boundaries to trigger the stream. The allows for long responses from the LLM to be read back without waiting for the entire response, making the system seem much more responsive. The system is able to respond with long elaborate stories, especially using the `gemma3:1b` model without issue.
 
-I experimented with Faster-Whisper projects as an alternative to Vosk. In the end, I stayed with Vosk. It was lighter and worked well. I observed the even Whisper STT was not designed for true streaming and while it was responsive on the Pi5, it still would require modifications to keep sentences together. The small Vosk model, while lower performing, was satisfactory for my Trooper application. If you are building a therapist, for example, or application where greater accuracy is required, you may need to pursue Faster-Whisper.
+I experimented with Faster-Whisper projects as an alternative to Vosk. In the end, I stayed with Vosk. It was lighter and worked well. I observed the even Whisper STT was not designed for true streaming and while it was responsive on the Pi5, it still would require modifications to keep sentences together. The small Vosk model, while lower performing, was satisfactory for this assistant. If you are building a therapist, for example, or application where greater accuracy is required, you may need to pursue Faster-Whisper.
 
 ## Python File Overview
 
@@ -55,11 +61,11 @@ I experimented with Faster-Whisper projects as an alternative to Vosk. In the en
 
 ## Core Architecture
 
-The primary goal of the project to was to create a local voice solution, small enough to install in a life-size storm trooper, with acceptable latency to allow for a natural conversation with the Trooper.
+The primary goal of the project to was to create a local voice solution, small enough to install in a compact build (e.g. a life-size prop), with acceptable latency to allow for a natural conversation with Localchat.
 
 #### Speech Input
 
-The system captures audio through a Playstation PS-Eye mic array connected to the Raspberry Pi5 via USB-A port. The PS-Eye has a 4 mic array that is sensitive enough to allow users at a distance to be able to speak to the Trooper.
+The system captures audio through a Playstation PS-Eye mic array connected to the Raspberry Pi5 via USB-A port. The PS-Eye has a 4 mic array that is sensitive enough to allow users at a distance to be able to speak to the assistant.
 
 Audio-in highlights:
 
@@ -91,7 +97,7 @@ Choose your model in the JSON configuration file:
 "model_name": "gemma3:1b",
 ```
 
-The system also implements configurable System Prompt to give the Trooper his personality. The default System Prompt for Trooper is also stored in the JSON configuration file:
+The system also implements configurable System Prompt to give the assistant its personality. The default System Prompt is stored in the JSON configuration file:
 
 ```
 "system_prompt":   "You are a loyal Imperial Stormtrooper. 
@@ -120,10 +126,10 @@ Audio is implemented using a low-cost USB speaker.
 
 #### LED/Switch/Camera Integration
 
-The system integrates an LED / Switch combination. The LED is used to communicate status of the system. The AdaFruit 30mm illuminated arcade style button can be used to start/stop a session with the Trooper.
+The system integrates an LED / Switch combination. The LED is used to communicate status of the system. The AdaFruit 30mm illuminated arcade style button can be used to start/stop a session with Localchat.
 
 - LED modes reflect states: `listen`, `blink`, `speak`, `solid`.
-- Controlled via FIFO pipe (`/tmp/trooper_led`) and interpreted by `main.py`.
+- Controlled via FIFO pipe (`/tmp/trooper_led` by default; override with `LOCALCHAT_LED_FIFO`) and interpreted by `main.py`.
 
 The switch is wired into GPIO pins of the Raspberry Pi5.
 
@@ -132,14 +138,14 @@ The Playstation Eye USB camera / microphone is used for camera and audio input. 
 ## Project Structure
 
 ```
-Trooper/
+Localchat/   # or your clone directory name
 ├── client.py             # Audio I/O, mic, speaker, LED
 ├── server.py             # Streaming server: LLM, STT, TTS
 ├── main.py               # Launches client on gesture/button
 ├── utils.py              # Shared helpers (e.g. led_request)
 ├── voices/               # Piper voice models
 ├── vosk-model/           # Vosk STT models
-├── .trooper_config.json  # JSON config file
+├── localchat_config.json # Example JSON config (copy to Pi home)
 ├── requirements.txt      # Dependencies file
 ├── client.log            # Log output for client debug
 ```
@@ -238,7 +244,7 @@ Then log out or reboot.
 
 ## WebSocket Architecture
 
-Trooper uses a bidirectional WebSocket connection between the **client** (audio I/O and playback on device) and the **server** (speech recognition, LLM inference, and TTS).
+Localchat uses a bidirectional WebSocket connection between the **client** (audio I/O and playback on device) and the **server** (speech recognition, LLM inference, and TTS).
 
 #### Message Flow Overview
 
@@ -287,21 +293,21 @@ client.py ──► [ Audio Output ]
 
 ## Configuration
 
-The system is configured via a JSON file named `.trooper_config.json`, located in the project directory. This file controls audio devices, behavior, personality, and more.
+The system is configured via a JSON file named `.localchat_config.json` on the device (`/home/<user>/...`). A sample ships in the repo as `localchat_config.json`. Legacy **`~/.trooper_config.json`** is still read if the new file is absent.
 
 #### USB-Based Configuration Override
 
 To support headless operation, configuration updates can be applied via a USB flash drive:
 
-- Format the drive with the name: `Trooper`
-- Place a file named: `trooper_config.json` in the root of the USB
+- Format the drive with the volume name: **`Localchat`** (preferred) or legacy **`Trooper`**
+- Place **`localchat_config.json`** (preferred) or legacy **`trooper_config.json`** in the root of the USB
 - On boot or restart, if the USB file is detected, it will:
   - Be **loaded immediately**
-  - Be **copied** to `~/.trooper_config.json`, making it the new default
+  - Be **copied** to `~/.localchat_config.json`, making it the new default
 
-This allows users to easily update the Trooper's persona (e.g. voice, model, prompt) without SSH access.
+This allows users to easily update persona (e.g. voice, model, prompt) without SSH access.
 
-#### Sample Configuration (.trooper_config.json)
+#### Sample Configuration (`localchat_config.json`)
 
 ```
 {
@@ -345,9 +351,9 @@ This allows users to easily update the Trooper's persona (e.g. voice, model, pro
 
 ## Vision-Based Wake (Gesture Detection)
 
-TrooperAI supports **gesture-based activation** as an alternative to the physical button.
+Localchat supports **gesture-based activation** as an alternative to the physical button.
 
-Using a webcam and the MediaPipe library, the system continuously monitors for a raised open hand gesture using real-time hand landmark detection. When five fingers are detected extended for a brief streak, Trooper toggles its session (start/stop).
+Using a webcam and the MediaPipe library, the system continuously monitors for a raised open hand gesture using real-time hand landmark detection. When five fingers are detected extended for a brief streak, Localchat toggles its session (start/stop).
 
 #### Activation Logic
 
@@ -375,11 +381,11 @@ Gesture detection is optional and controlled via config:
 }
 ```
 
-Set this flag in your `.trooper_config.json` or `trooper_config.json` on the USB.
+Set this flag in your `.localchat_config.json` or `localchat_config.json` on the USB (legacy `trooper_config.json` still works on USB).
 
 ## GPIO Connections
 
-The Trooper system uses the Raspberry Pi 5’s GPIO header to connect:
+The Localchat system uses the Raspberry Pi 5’s GPIO header to connect:
 
 - A **30mm Adafruit arcade-style LED pushbutton**
 - A **case cooling fan**
@@ -400,7 +406,7 @@ The Trooper system uses the Raspberry Pi 5’s GPIO header to connect:
 
 - The arcade button uses **internal pull-up resistors**, which is why its switch contact is connected to **+5V**.
 - The logic is **active-low**: pressing the button pulls GPIO 17 **low**, triggering an event.
-- The button is **debounced in software** and configured with `hold_time=0.75` seconds in `main.py`, so it only activates Trooper on a **long press**.
+- The button is **debounced in software** and configured with `hold_time=0.75` seconds in `main.py`, so it only activates Localchat on a **long press**.
 - Short taps are ignored and logged as `"Ignored short press"`.
 
 > This debounce and long-press detection helps avoid accidental session toggles due to noise or brief contact.
@@ -409,8 +415,8 @@ The Trooper system uses the Raspberry Pi 5’s GPIO header to connect:
 
 #### Services:
 
-- `trooper-server.service`: runs the LLM + TTS backend (`server.py`)
-- `trooper-main.service`: launches the LED/session manager (`main.py`)
+- `localchat-server.service`: runs the LLM + TTS backend (`server.py`)
+- `localchat-main.service`: launches the LED/session manager (`main.py`)
 
 #### Starting the System
 
@@ -418,25 +424,25 @@ To test the system, start the `server.py` and `main.py`. If you don't wont the b
 
 ```
 # Start the server
-cd Trooper && python3 server.py
+cd /path/to/Localchat && python3 server.py
 
 # Start the main, which controls the initial and closing greetings, 
 # the arcade button, and launches the client
-cd Trooper && python3 main.py
+cd /path/to/Localchat && python3 main.py
 
 # Start the client directly
-cd Trooper && python3 client.py
+cd /path/to/Localchat && python3 client.py
 ```
 
 #### Automatic Operation
 
 For automatic operation, the client and server can be started via `Systemd`
 
-##### Example: `/etc/systemd/system/trooper-server.service`
+##### Example: `/etc/systemd/system/localchat-server.service`
 
 ```
 [Unit]
-Description=Trooper Voice Server (LLM + TTS)
+Description=Localchat Voice Server (LLM + TTS)
 After=network.target sound.target
 
 [Service]
@@ -449,12 +455,12 @@ User=mjw
 WantedBy=multi-user.target
 ```
 
-##### Example: `/etc/systemd/system/trooper-main.service`
+##### Example: `/etc/systemd/system/localchat-main.service`
 
 ```
 [Unit]
-Description=Trooper Main Controller (LED + Session Launcher)
-After=trooper-server.service
+Description=Localchat Main Controller (LED + Session Launcher)
+After=localchat-server.service
 
 [Service]
 ExecStart=/usr/bin/python3 /home/mjw/Trooper/main.py
@@ -469,24 +475,24 @@ WantedBy=multi-user.target
 #### Setup:
 
 ```
-sudo systemctl enable trooper-server.service
-sudo systemctl enable trooper-main.service
-sudo systemctl start trooper-server.service
-sudo systemctl start trooper-main.service
+sudo systemctl enable localchat-server.service
+sudo systemctl enable localchat-main.service
+sudo systemctl start localchat-server.service
+sudo systemctl start localchat-main.service
 ```
 
 To verify:
 
 ```
-systemctl status trooper-server
-systemctl status trooper-main
+systemctl status localchat-server
+systemctl status localchat-main
 ```
 
-Use `systemctl list-unit-files | grep trooper` to confirm they are enabled.
+Use `systemctl list-unit-files | grep localchat` to confirm they are enabled. (Rename unit files if you still use `trooper-*.service` — or keep old names and only update `Description` text.)
 
 ## References
 
-TrooperAI stands on the shoulders of giants. I could not have built this system without the brilliant work shared by these open-source pioneers and educators:
+Localchat stands on the shoulders of giants. I could not have built this system without the brilliant work shared by these open-source pioneers and educators:
 
 - [Vosk STT](https://alphacephel.com/vosk/) – Lightweight, off-line-capable speech recognition engine.
 - [Piper TTS](https://github.com/rhasspy/piper) – High-quality local text-to-speech engine developed by the Rhasspy team.

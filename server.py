@@ -198,7 +198,7 @@ async def process_connection(websocket):
                     segment = clean_response(response_text).strip()
                     if segment and not re.fullmatch(r"[.?!\-–—…]+", segment):
                         # color code the output
-                        print(f"\033[38;5;75m[Trooper]: {segment}\033[0m")
+                        print(f"\033[38;5;75m[Localchat]: {segment}\033[0m")
                         full_response += segment + " "
                         led_request("speak")
                         async for chunk in stream_tts(segment, piper_proc, session_config.get("retro_voice_fx", False), session_config["voice"]):    

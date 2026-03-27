@@ -1,15 +1,21 @@
-# Python dependencies for Trooper project
+# Python dependencies for Localchat project
 aiofiles==23.2.1
 aiohttp==3.9.3
-asyncio
 numpy==1.26.4
-pyaudio==0.2.13
+pyaudio==0.2.14
 python-dotenv==1.0.1
 soxr==0.3.7
 soundfile==0.12.1
 websockets==12.0
 vosk==0.3.45
-gpiozero==2.0
-lgpio==0.0.4
+# Raspberry Pi GPIO only — skipped on Windows (pip cannot install lgpio here)
+gpiozero==2.0; sys_platform == "linux"
+lgpio==0.2.2.0; sys_platform == "linux"
 opencv-python==4.9.0.80
-mediapipe==0.10.9
+mediapipe>=0.10.13
+
+# Manual RAG web UI (optional): pip install -r requirements.txt
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.9
+pypdf>=5.0.0

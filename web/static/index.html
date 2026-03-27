@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Manual Assistant (local RAG)</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e7ecf3;
+      --muted: #8b98a8;
+      --accent: #3d8bfd;
+      --border: #2a3544;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+    .wrap {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 1.5rem;
+    }
+    h1 {
+      font-weight: 600;
+      font-size: 1.35rem;
+      margin: 0 0 0.25rem 0;
+    }
+    .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 1.25rem; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.1rem;
+      margin-bottom: 1rem;
+    }
+    label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.35rem; }
+    input[type="file"] {
+      width: 100%;
+      padding: 0.5rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+    }
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 0.55rem 1rem;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      margin-top: 0.5rem;
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    textarea {
+      width: 100%;
+      min-height: 100px;
+      padding: 0.65rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      resize: vertical;
+      font-family: inherit;
+    }
+    .status {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-top: 0.5rem;
+    }
+    .status.ok { color: #5bd37a; }
+    .status.err { color: #f07178; }
+    .answer {
+      white-space: pre-wrap;
+      margin-top: 0.75rem;
+      padding: 0.75rem;
+      background: var(--bg);
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+    .sources {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-top: 0.5rem;
+    }
+    code { font-size: 0.85em; background: #111820; padding: 0.1em 0.35em; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Manual Q&amp;A (local)</h1>
+    <p class="sub">Upload a PDF manual, then ask questions. Uses Ollama embeddings + chat on your machine.</p>
+
+    <div class="panel">
+      <label>1. Upload manual (PDF)</label>
+      <input type="file" id="pdf" accept=".pdf,application/pdf" />
+      <button type="button" id="btnUpload">Ingest manual</button>
+      <div class="status" id="upStatus"></div>
+    </div>
+
+    <div class="panel">
+      <label>2. Ask about the manual</label>
+      <textarea id="q" placeholder="e.g. How do I reset the device to factory defaults?"></textarea>
+      <button type="button" id="btnAsk">Ask</button>
+      <div class="status" id="chatStatus"></div>
+      <div class="answer" id="answer" hidden></div>
+      <div class="sources" id="sources"></div>
+    </div>
+
+    <div class="panel">
+      <label>Server status</label>
+      <div class="status" id="srvStatus">Loading…</div>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    async function refreshStatus() {
+      try {
+        const r = await fetch("/api/status");
+        const j = await r.json();
+        $("srvStatus").textContent = j.loaded
+          ? `Index ready: ${j.chunks} chunks from ${j.source_file || "unknown"} · embed ${j.embed_model} · chat ${j.chat_model}`
+          : "No manual loaded yet — upload a PDF.";
+        $("srvStatus").className = "status " + (j.loaded ? "ok" : "");
+      } catch (e) {
+        $("srvStatus").textContent = "Could not reach /api/status";
+        $("srvStatus").className = "status err";
+      }
+    }
+
+    $("btnUpload").onclick = async () => {
+      const f = $("pdf").files[0];
+      if (!f) {
+        $("upStatus").textContent = "Choose a PDF first.";
+        $("upStatus").className = "status err";
+        return;
+      }
+      $("btnUpload").disabled = true;
+      $("upStatus").textContent = "Uploading and embedding… (may take a while)";
+      $("upStatus").className = "status";
+      const fd = new FormData();
+      fd.append("file", f);
+      try {
+        const r = await fetch("/api/upload", { method: "POST", body: fd });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || r.statusText);
+        $("upStatus").textContent = `OK — indexed ${j.chunks} chunks from ${j.filename}`;
+        $("upStatus").className = "status ok";
+        refreshStatus();
+      } catch (e) {
+        $("upStatus").textContent = String(e.message || e);
+        $("upStatus").className = "status err";
+      }
+      $("btnUpload").disabled = false;
+    };
+
+    $("btnAsk").onclick = async () => {
+      const message = $("q").value.trim();
+      if (!message) return;
+      $("btnAsk").disabled = true;
+      $("chatStatus").textContent = "Asking…";
+      $("chatStatus").className = "status";
+      $("answer").hidden = true;
+      $("sources").textContent = "";
+      try {
+        const r = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail));
+        $("answer").textContent = j.answer;
+        $("answer").hidden = false;
+        const src = (j.sources || []).map((s) => `p.${s.page} (${s.score})`).join(" · ");
+        $("sources").textContent = src ? "Sources: " + src : "";
+        $("chatStatus").textContent = "Done.";
+        $("chatStatus").className = "status ok";
+      } catch (e) {
+        $("chatStatus").textContent = String(e.message || e);
+        $("chatStatus").className = "status err";
+      }
+      $("btnAsk").disabled = false;
+    };
+
+    fetch("/api/health")
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.ok) refreshStatus();
+        else $("srvStatus").textContent = "Ollama not reachable — start Ollama and pull models.";
+      })
+      .catch(() => {
+        $("srvStatus").textContent = "Health check failed.";
+      });
+    refreshStatus();
+  </script>
+</body>
+</html>
