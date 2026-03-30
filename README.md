@@ -1,8 +1,166 @@
-# Localchat: Local Conversational AI for Raspberry Pi5
+# Localchat: Jungle-Grade PDF Recipe Intelligence
 
-The **Localchat** project was a test to see if I could build a low-latency, local (non-networked) voice assistant in Python for the Raspberry Pi. The system combines real-time speech recognition, LLM-based dialog, and high-quality TTS into a reactive system running on Raspberry Pi5.
+Localchat is now running as a **local web RAG system** for old recipe PDFs: fast retrieval, grounded answers, and typo-tolerant search.
 
-The final device is housed in a Game 5 Pi retro arcade case. The AdaFruit arcade style LED button was integrated to provide feedback and control. USB ports are used for the camera/mic array (Playstation Eye) and speaker audio out. A USB flash drive is used for headless configuration. The original build targeted a life-size Stormtrooper prop; the codebase name is now **Localchat**.
+Think of it like this:
+
+**You drop a messy historical cookbook into the jungle.  
+Localchat hunts the right recipe, cross-checks tracks, and returns only what is truly in the source.**
+
+---
+
+## What We Are Running Right Now
+
+Primary runtime:
+
+- `uvicorn web.app:app --host 0.0.0.0 --port 8080`
+- Frontend: `web/static/index.html`
+- Backend: `web/app.py`
+- Retrieval modules: `web/rag/*`
+
+Current mission profile:
+
+- PDF upload + indexing
+- Manual Q&A mode
+- Recipe mode with fuzzy + semantic hybrid ranking
+- Grounded recipe output (source-first, low hallucination)
+- Browser speech-to-text button (English / Italian) for quick voice query entry
+
+---
+
+## Models We Use
+
+Default local Ollama models:
+
+- Embeddings: `nomic-embed-text`
+- Chat model: `qwen3.5:9b`
+- Optional fallback chat: `qwen2.5:7b-instruct`
+
+These are configurable via environment variables:
+
+- `OLLAMA_EMBED_MODEL`
+- `OLLAMA_CHAT_MODEL`
+- `OLLAMA_CHAT_FALLBACK`
+
+---
+
+## Web Page Process (index.html) — End to End
+
+When the page loads:
+
+1. Health check: `GET /api/health`
+2. Status check: `GET /api/status`
+3. UI shows index/model state
+
+When you upload a PDF:
+
+1. Browser sends `POST /api/upload`
+2. Backend extracts + cleans pages
+3. Builds:
+   - chunk store (`data/rag_store`)
+   - recipe catalog (`data/recipe_store`)
+4. UI refreshes status
+
+When you ask a question:
+
+- **Recipe checkbox OFF**
+  - endpoint: `POST /api/chat`
+  - chunk-level RAG retrieval + answer
+
+- **Recipe checkbox ON**
+  - endpoint: `POST /api/recipe-chat`
+  - hybrid retrieval (fuzzy + semantic + coverage)
+  - grounded output path by default
+  - includes match metadata (`score`, `embed`, `fuzzy`, `coverage`, `page`)
+
+Voice button behavior:
+
+- click 1: Start listening
+- click 2: Stop + transcribe to query box
+- language dropdown: English (`en-US`) / Italian (`it-IT`)
+
+---
+
+## Retrieval Stack (The Jungle Engine)
+
+Pipeline:
+
+`User Query -> Hybrid Retrieval -> Candidate Recipes -> Grounded Response`
+
+Hybrid scoring combines:
+
+- fuzzy similarity (typos / partials)
+- embedding similarity (meaning)
+- token coverage signal (query intent alignment)
+
+Why this matters:
+
+- `muton cutlet` can still find `mutton cutlets`
+- `salsa di pomidoro` can target tomato-sauce intent better
+- grounded mode resists “nice but fake” recipe generation
+
+---
+
+## Run It (Web App)
+
+From repo root:
+
+```bash
+pip install -r requirements.txt
+uvicorn web.app:app --host 0.0.0.0 --port 8080
+```
+
+Open:
+
+- http://127.0.0.1:8080
+
+Recommended Ollama setup:
+
+```bash
+ollama pull nomic-embed-text
+ollama pull qwen3.5:9b
+```
+
+Optional performance tuning:
+
+- `OLLAMA_NUM_PARALLEL`
+- `RAG_RECIPE_CONCURRENCY`
+- `RAG_EMBED_CONCURRENCY`
+
+---
+
+## Example Recipe Queries
+
+- `what is salsa di pomidoro`
+- `how to make tomato sauce`
+- `how to prepare mutton cutlets`
+- `filet of veal recipe`
+- `eggs with tomatoes`
+- `sauce for broiled fish`
+- `risotto con pecorino`
+
+---
+
+## Troubleshooting Quick Hits
+
+- **No recipe catalog**
+  - Upload PDF again or rebuild indexes (`data/rag_store`, `data/recipe_store`).
+
+- **Slow startup**
+  - Disable expensive normalize pass unless needed: `RAG_RECIPE_NORMALIZE=0`.
+
+- **Wrong fast match**
+  - Re-ingest after retrieval logic updates and keep recipe mode enabled for dish queries.
+
+- **Embedding mismatch error**
+  - Rebuild indexes after changing `OLLAMA_EMBED_MODEL`.
+
+---
+
+## Legacy Note
+
+This README now prioritizes the **current web PDF/recipe workflow**.  
+Older historical sections below are retained as archive/context from prior project phases.
 
 ### Rename / compatibility (existing installs)
 
