@@ -14,33 +14,308 @@
       --border: #2a3544;
     }
     * { box-sizing: border-box; }
+    html {
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
+    }
     body {
       margin: 0;
       font-family: "Segoe UI", system-ui, sans-serif;
       background: var(--bg);
       color: var(--text);
-      min-height: 100vh;
+      height: 100vh;
       line-height: 1.5;
     }
     .wrap {
-      max-width: 880px;
+      max-width: 940px;
       margin: 0 auto;
-      padding: 1.5rem;
+      padding: 1rem;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
     }
     h1 {
       font-weight: 600;
-      font-size: 1.35rem;
+      font-size: 1.1rem;
       margin: 0 0 0.25rem 0;
     }
-    .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 1.25rem; }
+    .sub { color: var(--muted); font-size: 0.85rem; margin: 0; }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.75rem 0.9rem;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #121a26;
+    }
+    .topbar-left { display: flex; flex-direction: column; gap: 0.12rem; }
+    .status-pill {
+      font-size: 0.78rem;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 0.28rem 0.6rem;
+      white-space: nowrap;
+      max-width: 52ch;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     .panel {
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 10px;
-      padding: 1rem 1.1rem;
-      margin-bottom: 1rem;
+      padding: 0.9rem 1rem;
+    }
+    .chat-area {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .conversation {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 0.75rem 0.9rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .chat-toolbar {
+      display: flex;
+      justify-content: flex-end;
+      flex-shrink: 0;
+    }
+    .chat-toolbar button {
+      margin-top: 0;
+      padding: 0.35rem 0.65rem;
+      font-size: 0.8rem;
+    }
+    .clear-label-mobile {
+      display: none;
+    }
+    .chat-messages {
+      flex: 1;
+      min-height: 120px;
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+    }
+    .chat-messages:empty::before {
+      content: "Ask about your manual below — each question and answer appears here.";
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.45;
+      display: block;
+      padding: 0.35rem 0.15rem 0.5rem;
+      max-width: 52ch;
+    }
+    .msg-row {
+      display: flex;
+      width: 100%;
+    }
+    .msg-row.msg-user { justify-content: flex-end; }
+    .msg-row.msg-assistant { justify-content: flex-start; flex-direction: column; align-items: flex-start; }
+    .bubble {
+      max-width: min(85%, 78ch);
+      padding: 0.75rem 0.95rem;
+      border-radius: 14px;
+      font-size: 0.94rem;
+      line-height: 1.55;
+      word-break: break-word;
+    }
+    .bubble-user {
+      background: #1e3a5f;
+      border: 1px solid #2a4a72;
+      color: var(--text);
+      border-bottom-right-radius: 4px;
+    }
+    .bubble-assistant {
+      background: #101722;
+      border: 1px solid var(--border);
+      white-space: pre-wrap;
+      border-bottom-left-radius: 4px;
+    }
+    .bubble-assistant.bubble-err {
+      border-color: #6a3035;
+      background: #1a1214;
+      color: #f5b8bc;
+    }
+    .msg-meta {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-top: 0.35rem;
+      margin-left: 0.15rem;
+      max-width: min(92%, 85ch);
+      line-height: 1.4;
+    }
+    .source-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      align-items: center;
+      margin-top: 0.15rem;
+    }
+    .source-chip {
+      display: inline-block;
+      font-size: 0.76rem;
+      padding: 0.22rem 0.5rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: #0f1620;
+      color: var(--muted);
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .bubble-thinking {
+      white-space: normal !important;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      min-height: 2.6rem;
+      color: var(--muted);
+    }
+    .thinking-dots {
+      display: inline-flex;
+      gap: 0.12rem;
+      letter-spacing: 0;
+    }
+    .thinking-dots span {
+      display: inline-block;
+      font-weight: 700;
+      animation: thinkingDot 1.05s ease-in-out infinite;
+    }
+    .thinking-dots span:nth-child(1) { animation-delay: 0s; }
+    .thinking-dots span:nth-child(2) { animation-delay: 0.15s; }
+    .thinking-dots span:nth-child(3) { animation-delay: 0.3s; }
+    @keyframes thinkingDot {
+      0%, 70%, 100% { opacity: 0.15; transform: translateY(0); }
+      35% { opacity: 1; transform: translateY(-1px); }
+    }
+    .composer {
+      position: sticky;
+      bottom: 0;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 0.85rem;
+      box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.2);
+    }
+    .composer-collapse-toggle {
+      display: none;
+      width: 100%;
+      align-items: center;
+      justify-content: center;
+      gap: 0.45rem;
+      padding: 0;
+      margin: 0;
+      border: none;
+      border-radius: 8px;
+      background: #1e2a3d;
+      color: var(--muted);
+      font-size: 0.8rem;
+      cursor: pointer;
+      min-height: 40px;
+    }
+    button.composer-collapse-toggle {
+      background: #1e2a3d;
+      color: var(--muted);
+    }
+    .composer-collapse-toggle:hover {
+      color: var(--text);
+      background: #243044;
+    }
+    .composer-toggle-icon {
+      font-size: 0.7rem;
+      line-height: 1;
+      color: var(--accent);
+    }
+    .composer-toggle-label {
+      font-weight: 500;
+      color: var(--text);
+    }
+    .composer--collapsed .composer-toggle-icon {
+      transform: none;
+    }
+    .composer-controls {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+    .pdf-drawer {
+      border: none;
+      margin: 0;
+      padding: 0;
+    }
+    .pdf-drawer-summary {
+      list-style: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      padding: 0.55rem 0.75rem;
+      margin-top: 0.35rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #141c28;
+      font-size: 0.82rem;
+      color: var(--muted);
+      user-select: none;
+    }
+    .pdf-drawer-summary::-webkit-details-marker {
+      display: none;
+    }
+    .pdf-drawer-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .pdf-drawer-chevron::after {
+      content: "▸";
+      display: inline-block;
+      transition: transform 0.15s ease;
+      color: var(--muted);
+    }
+    .pdf-drawer:not([open]) .pdf-drawer-chevron::after {
+      transform: rotate(0deg);
+    }
+    .pdf-drawer[open] .pdf-drawer-chevron::after {
+      transform: rotate(90deg);
+    }
+    .pdf-drawer-hint {
+      font-size: 0.75rem;
+      color: var(--muted);
+      font-weight: 400;
+    }
+    @media (max-width: 380px) {
+      .pdf-drawer-hint {
+        display: none;
+      }
     }
     label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.35rem; }
+    .kbd-hint {
+      font-weight: 400;
+      font-size: 0.78rem;
+      color: #6a7686;
+    }
+    .kbd-hint-mobile {
+      display: none;
+      font-weight: 400;
+      font-size: 0.78rem;
+      color: #6a7686;
+    }
     input[type="file"] {
       width: 100%;
       padding: 0.5rem;
@@ -49,15 +324,20 @@
       background: var(--bg);
       color: var(--text);
     }
+    .file-inline {
+      width: 280px;
+      max-width: 100%;
+      margin-left: 0.2rem;
+    }
     button {
       background: var(--accent);
       color: #fff;
       border: none;
       padding: 0.55rem 1rem;
       border-radius: 6px;
-      font-size: 0.95rem;
+      font-size: 0.9rem;
       cursor: pointer;
-      margin-top: 0.5rem;
+      margin-top: 0;
     }
     .btn-secondary {
       background: #2a3544;
@@ -75,7 +355,7 @@
       background: var(--bg);
       color: var(--text);
       margin-left: 0.45rem;
-      margin-top: 0.5rem;
+      margin-top: 0;
     }
     button:disabled { opacity: 0.45; cursor: not-allowed; }
     textarea {
@@ -89,6 +369,28 @@
       resize: vertical;
       font-family: inherit;
     }
+    .control-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin-top: 0.55rem;
+    }
+    .control-row-primary {
+      margin-top: 0.5rem;
+    }
+    .control-row-pdf {
+      margin-top: 0.35rem;
+    }
+    .recipe-toggle {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      margin-top: 0.55rem;
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
     .status {
       font-size: 0.85rem;
       color: var(--muted);
@@ -101,55 +403,410 @@
       overflow-wrap: anywhere;
       word-break: break-word;
     }
-    .answer {
-      white-space: pre-wrap;
-      margin-top: 0.75rem;
-      padding: 0.75rem;
-      background: var(--bg);
-      border-radius: 8px;
-      border: 1px solid var(--border);
-    }
-    .sources {
-      font-size: 0.8rem;
-      color: var(--muted);
-      margin-top: 0.5rem;
-    }
     code { font-size: 0.85em; background: #111820; padding: 0.1em 0.35em; border-radius: 4px; }
+
+    /* Desktop / tablet: wider shell, split toolbars, PDF drawer summary hidden */
+    @media (min-width: 721px) {
+      .wrap {
+        max-width: 1100px;
+        padding: 1rem 1.25rem;
+        gap: 1rem;
+      }
+      .topbar {
+        padding: 1rem 1.1rem;
+        border-radius: 12px;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+      }
+      h1 {
+        font-size: 1.2rem;
+      }
+      .sub {
+        font-size: 0.88rem;
+      }
+      .status-pill {
+        max-width: min(52ch, 48%);
+        font-size: 0.8rem;
+        padding: 0.35rem 0.75rem;
+      }
+      .conversation {
+        border-radius: 14px;
+        padding: 1rem 1.1rem;
+        min-height: 200px;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+      }
+      .composer {
+        border-radius: 14px;
+        padding: 1rem 1.1rem;
+        box-shadow: 0 4px 28px rgba(0, 0, 0, 0.25);
+      }
+      .pdf-drawer-summary {
+        display: none;
+      }
+      .pdf-drawer .control-row-pdf {
+        margin-top: 0;
+      }
+      .composer-controls {
+        gap: 0.5rem;
+        margin-top: 0.15rem;
+        padding-top: 0.65rem;
+        border-top: 1px solid var(--border);
+      }
+      .control-row-primary {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 0;
+      }
+      .control-row-pdf {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 0;
+      }
+      .file-inline {
+        width: 280px;
+        flex: 0 0 auto;
+      }
+      textarea {
+        min-height: 110px;
+      }
+      .composer-collapse-toggle {
+        display: none !important;
+      }
+      .composer .composer-body {
+        display: block !important;
+      }
+      .composer.composer--collapsed {
+        padding: 1rem 1.1rem;
+        max-height: none;
+      }
+    }
+
+    /* Wide desktop: chat + composer side-by-side */
+    @media (min-width: 900px) {
+      .wrap {
+        max-width: 1280px;
+      }
+      .chat-area {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) min(420px, 36vw);
+        grid-template-rows: minmax(0, 1fr);
+        gap: 1rem;
+        align-items: stretch;
+        min-height: 0;
+        flex: 1;
+      }
+      .conversation {
+        min-height: 0;
+        max-height: none;
+        height: 100%;
+        align-self: stretch;
+        overflow: auto;
+      }
+      .composer {
+        position: sticky;
+        top: 0.75rem;
+        align-self: start;
+        max-height: calc(100vh - 1.5rem);
+        overflow-y: auto;
+        bottom: auto;
+        margin-bottom: 0.5rem;
+      }
+    }
+
+    /* Phone: column layout — chat gets most of the screen; composer never overlays messages */
+    @media (max-width: 720px) {
+      html {
+        height: 100%;
+        height: -webkit-fill-available;
+      }
+      body {
+        overflow: hidden;
+        height: 100%;
+        max-height: 100vh;
+        max-height: 100dvh;
+      }
+      .wrap {
+        height: 100%;
+        max-height: 100vh;
+        max-height: 100dvh;
+        min-height: 0;
+        overflow: hidden;
+        padding: max(0.5rem, env(safe-area-inset-top)) max(0.65rem, env(safe-area-inset-right))
+          max(0.65rem, env(safe-area-inset-bottom)) max(0.65rem, env(safe-area-inset-left));
+        gap: 0.6rem;
+      }
+      .chat-area {
+        flex: 1 1 0;
+        min-height: 0;
+        overflow: hidden;
+        gap: 0.5rem;
+      }
+      .conversation {
+        flex: 1 1 0;
+        min-height: 0;
+        padding: 0.65rem 0.75rem;
+        overflow-x: hidden;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior: contain;
+      }
+      .chat-messages {
+        flex: 0 1 auto;
+        min-height: 0;
+      }
+      .topbar {
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 0.35rem 0.5rem;
+        padding: 0.45rem 0.6rem;
+        flex-shrink: 0;
+      }
+      .topbar-left {
+        flex: 1 1 auto;
+        min-width: 0;
+        flex-shrink: 0;
+      }
+      h1 {
+        font-size: 0.98rem;
+        margin: 0 0 0.1rem 0;
+        line-height: 1.25;
+      }
+      .sub {
+        display: none;
+      }
+      .status-pill {
+        flex: 1 1 100%;
+        order: 3;
+        max-width: none;
+        white-space: normal;
+        border-radius: 6px;
+        font-size: 0.65rem;
+        line-height: 1.3;
+        word-break: break-word;
+        padding: 0.32rem 0.5rem;
+        max-height: 3.6em;
+        overflow: hidden;
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 3;
+        line-clamp: 3;
+      }
+      .kbd-hint {
+        display: none;
+      }
+      .kbd-hint-mobile {
+        display: inline;
+      }
+      .chat-toolbar {
+        justify-content: flex-end;
+        flex-shrink: 0;
+        margin: 0 0 0.15rem 0;
+      }
+      .chat-toolbar button {
+        width: auto;
+        min-height: 36px;
+        padding: 0.32rem 0.65rem;
+        font-size: 0.78rem;
+        margin-left: 0;
+      }
+      .clear-label-desktop {
+        display: none;
+      }
+      .clear-label-mobile {
+        display: inline;
+      }
+      #chatStatus {
+        font-size: 0.72rem;
+        margin-top: 0;
+        margin-bottom: 0.2rem;
+        min-height: 0;
+      }
+      .chat-messages:empty {
+        min-height: 4rem;
+      }
+      .chat-messages:empty::before {
+        font-size: 0.85rem;
+      }
+      .bubble {
+        max-width: min(94%, 100%);
+        font-size: 0.92rem;
+      }
+      .composer-collapse-toggle {
+        display: flex;
+        margin: -0.35rem -0.4rem 0.45rem -0.4rem;
+        width: calc(100% + 0.8rem);
+        border-radius: 10px 10px 0 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .composer.composer--collapsed {
+        max-height: none;
+        overflow: visible;
+        padding: 0.4rem 0.55rem;
+      }
+      .composer.composer--collapsed .composer-collapse-toggle {
+        margin: 0;
+        width: 100%;
+        border-radius: 8px;
+        border-bottom: none;
+      }
+      .composer.composer--collapsed .composer-body {
+        display: none;
+      }
+      .composer {
+        position: relative;
+        bottom: auto;
+        flex-shrink: 0;
+        max-height: min(48vh, 380px);
+        overflow-x: hidden;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior: contain;
+        padding: 0.6rem 0.65rem;
+        box-shadow: 0 -2px 16px rgba(0, 0, 0, 0.18);
+      }
+      textarea {
+        min-height: 72px;
+        font-size: 16px; /* avoids iOS zoom-on-focus */
+      }
+      .recipe-toggle {
+        font-size: 0.82rem;
+        line-height: 1.45;
+        align-items: flex-start;
+      }
+      .recipe-toggle input {
+        margin-top: 0.2rem;
+        flex-shrink: 0;
+      }
+      .composer-controls {
+        border-top: none;
+        padding-top: 0;
+        margin-top: 0;
+        gap: 0.45rem;
+      }
+      .control-row-primary,
+      .control-row-pdf {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.55rem;
+        margin-top: 0.35rem;
+        align-items: stretch;
+      }
+      .control-row-primary #btnAsk {
+        grid-column: 1;
+      }
+      .control-row-primary #btnStt {
+        grid-column: 2;
+      }
+      .control-row-primary #sttLang {
+        grid-column: 1 / -1;
+      }
+      .control-row-pdf #pdf {
+        grid-column: 1 / -1;
+      }
+      .control-row-pdf #btnUpload {
+        grid-column: 1;
+      }
+      .control-row-pdf #btnUseDocs {
+        grid-column: 2;
+      }
+      .control-row-pdf #btnRemoveUpload {
+        grid-column: 1 / -1;
+      }
+      .control-row-primary button,
+      .control-row-primary select,
+      .control-row-pdf button,
+      .control-row-pdf select {
+        width: 100%;
+        min-height: 44px;
+        margin-left: 0 !important;
+        margin-top: 0;
+      }
+      .control-row-pdf input[type="file"] {
+        width: 100% !important;
+        margin-left: 0 !important;
+        min-height: 44px;
+        padding: 0.55rem;
+      }
+      .file-inline {
+        width: 100% !important;
+        max-width: 100%;
+      }
+      .status {
+        margin-top: 0.4rem;
+      }
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>Manual Q&amp;A (local)</h1>
-    <p class="sub">Upload a PDF manual, then ask questions. Uses Ollama embeddings + chat on your machine. Recipe PDFs: use <strong>Recipe search</strong> for fuzzy + semantic match, then LLM formatting.</p>
-
-    <div class="panel">
-      <label>1. Upload manual (PDF)</label>
-      <input type="file" id="pdf" accept=".pdf,application/pdf" />
-      <button type="button" id="btnUpload">Ingest manual</button>
-      <div class="status" id="upStatus"></div>
+    <div class="topbar">
+      <div class="topbar-left">
+        <h1>Manual Q&amp;A (local)</h1>
+        <p class="sub">Ask from PDF with manual mode or recipe mode.</p>
+      </div>
+      <div class="status-pill" id="srvStatus">Loading…</div>
     </div>
 
-    <div class="panel">
-      <label>2. Ask about the manual</label>
-      <textarea id="q" placeholder="Manual: e.g. reset to defaults · Recipe: e.g. mutton cutlets, tomato sauce"></textarea>
-      <label style="margin-top:0.65rem;display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
-        <input type="checkbox" id="recipeMode" />
-        <span>Recipe search (fuzzy + semantic hybrid, then LLM)</span>
-      </label>
-      <button type="button" id="btnAsk">Ask</button>
-      <button type="button" id="btnStt" class="btn-secondary">Start voice</button>
-      <select id="sttLang" title="Speech recognition language">
-        <option value="en-US" selected>Voice: English</option>
-        <option value="it-IT">Voice: Italiano</option>
-      </select>
-      <div class="status" id="chatStatus"></div>
-      <div class="answer" id="answer" hidden></div>
-      <div class="sources" id="sources"></div>
-    </div>
+    <div class="chat-area">
+      <div class="conversation" id="chatScroll" role="log" aria-live="polite" aria-relevant="additions">
+        <div class="chat-toolbar">
+          <button type="button" id="btnClearChat" class="btn-secondary" title="Remove all messages from this view">
+            <span class="clear-label-desktop">Clear conversation</span><span class="clear-label-mobile">Clear</span>
+          </button>
+        </div>
+        <div class="status" id="chatStatus"></div>
+        <div id="chatMessages" class="chat-messages"></div>
+      </div>
 
-    <div class="panel">
-      <label>Server status</label>
-      <div class="status" id="srvStatus">Loading…</div>
+      <div class="composer" id="composerPanel">
+        <button
+          type="button"
+          id="btnComposerToggle"
+          class="composer-collapse-toggle"
+          aria-expanded="true"
+          aria-controls="composerBody"
+          title="Hide ask and search panel to read the chat"
+        >
+          <span class="composer-toggle-icon" aria-hidden="true">▼</span>
+          <span class="composer-toggle-label">Hide search</span>
+        </button>
+        <div class="composer-body" id="composerBody">
+          <label>Ask about the manual <span class="kbd-hint">Enter to send · Shift+Enter newline</span><span class="kbd-hint-mobile">Tap Ask to send</span></label>
+          <textarea id="q" placeholder="Manual: e.g. reset to defaults · Recipe: e.g. mutton cutlets, tomato sauce"></textarea>
+          <label class="recipe-toggle">
+            <input type="checkbox" id="recipeMode" />
+            <span>Recipe search (fuzzy + semantic hybrid, then LLM)</span>
+          </label>
+          <div class="composer-controls">
+            <div class="control-row control-row-primary">
+              <button type="button" id="btnAsk">Ask</button>
+              <button type="button" id="btnStt" class="btn-secondary">Start voice</button>
+              <select id="sttLang" title="Speech recognition language">
+                <option value="en-US" selected>Voice: English</option>
+                <option value="it-IT">Voice: Italiano</option>
+              </select>
+            </div>
+            <details class="pdf-drawer" open>
+              <summary class="pdf-drawer-summary">
+                <span class="pdf-drawer-title"><span class="pdf-drawer-chevron"></span> PDF &amp; index</span>
+                <span class="pdf-drawer-hint">Upload · ingest · docs folder</span>
+              </summary>
+              <div class="control-row control-row-pdf">
+                <input type="file" id="pdf" class="file-inline" accept=".pdf,application/pdf" title="Select PDF manual" />
+                <button type="button" id="btnUpload">Ingest manual</button>
+                <button type="button" id="btnUseDocs" class="btn-secondary">Use docs PDF</button>
+                <button type="button" id="btnRemoveUpload" class="btn-secondary">Remove uploaded PDF</button>
+              </div>
+            </details>
+          </div>
+          <div class="status" id="upStatus"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -172,6 +829,76 @@
         b.textContent = "Start voice";
         b.classList.remove("btn-recording");
       }
+    }
+
+    function scrollChatToBottom() {
+      const el = $("chatScroll");
+      if (el) el.scrollTop = el.scrollHeight;
+    }
+
+    function appendUserBubble(text) {
+      const row = document.createElement("div");
+      row.className = "msg-row msg-user";
+      const bubble = document.createElement("div");
+      bubble.className = "bubble bubble-user";
+      bubble.textContent = text;
+      row.appendChild(bubble);
+      $("chatMessages").appendChild(row);
+      scrollChatToBottom();
+    }
+
+    function appendAssistantThinking() {
+      const row = document.createElement("div");
+      row.className = "msg-row msg-assistant";
+      const bubble = document.createElement("div");
+      bubble.className = "bubble bubble-assistant bubble-thinking";
+      bubble.setAttribute("aria-busy", "true");
+      bubble.innerHTML =
+        '<span class="thinking-label">Thinking</span><span class="thinking-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>';
+      const meta = document.createElement("div");
+      meta.className = "msg-meta";
+      row.appendChild(bubble);
+      row.appendChild(meta);
+      $("chatMessages").appendChild(row);
+      scrollChatToBottom();
+      return { bubble, meta };
+    }
+
+    function truncateChip(s, max) {
+      if (!s) return "";
+      const t = String(s).trim();
+      return t.length <= max ? t : t.slice(0, max - 1) + "…";
+    }
+
+    function fillSourceChips(metaEl, recipeMode, data) {
+      metaEl.textContent = "";
+      const wrap = document.createElement("div");
+      wrap.className = "source-chips";
+      if (recipeMode && (data.matches || []).length) {
+        for (const m of data.matches.slice(0, 8)) {
+          const chip = document.createElement("span");
+          chip.className = "source-chip";
+          const title = m.title || "";
+          chip.title = title;
+          const sc = Number(m.score);
+          const scoreStr = Number.isFinite(sc) ? sc.toFixed(2) : String(m.score ?? "");
+          const head = truncateChip(title, 26);
+          chip.textContent = head ? `${head} · p.${m.page} · ${scoreStr}` : `p.${m.page} · ${scoreStr}`;
+          wrap.appendChild(chip);
+        }
+        metaEl.appendChild(wrap);
+        return;
+      }
+      const src = data.sources || [];
+      for (const s of src.slice(0, 12)) {
+        const chip = document.createElement("span");
+        chip.className = "source-chip";
+        const sc = Number(s.score);
+        const scoreStr = Number.isFinite(sc) ? sc.toFixed(2) : String(s.score ?? "");
+        chip.textContent = `p.${s.page} · ${scoreStr}`;
+        wrap.appendChild(chip);
+      }
+      if (wrap.children.length) metaEl.appendChild(wrap);
     }
 
     function initStt() {
@@ -262,14 +989,58 @@
       $("btnUpload").disabled = false;
     };
 
-    $("btnAsk").onclick = async () => {
+    $("btnUseDocs").onclick = async () => {
+      $("btnUseDocs").disabled = true;
+      $("upStatus").textContent = "Reindexing from docs PDF…";
+      $("upStatus").className = "status";
+      try {
+        const r = await fetch("/api/use-docs", { method: "POST" });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || r.statusText);
+        $("upStatus").textContent = `OK — active index rebuilt from docs/${j.source} (${j.chunks} chunks).`;
+        $("upStatus").className = "status ok";
+        refreshStatus();
+      } catch (e) {
+        $("upStatus").textContent = String(e.message || e);
+        $("upStatus").className = "status err";
+      }
+      $("btnUseDocs").disabled = false;
+    };
+
+    $("btnRemoveUpload").onclick = async () => {
+      $("btnRemoveUpload").disabled = true;
+      $("upStatus").textContent = "Removing uploaded manual…";
+      $("upStatus").className = "status";
+      try {
+        const r = await fetch("/api/upload", { method: "DELETE" });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || r.statusText);
+        $("upStatus").textContent = j.removed
+          ? "Uploaded manual removed from data/manuals/current_manual.pdf."
+          : "No uploaded manual found to remove.";
+        $("upStatus").className = "status ok";
+      } catch (e) {
+        $("upStatus").textContent = String(e.message || e);
+        $("upStatus").className = "status err";
+      }
+      $("btnRemoveUpload").disabled = false;
+    };
+
+    $("btnClearChat").onclick = () => {
+      $("chatMessages").innerHTML = "";
+      $("chatStatus").textContent = "";
+      $("chatStatus").className = "status";
+    };
+
+    async function submitAsk() {
+      if ($("btnAsk").disabled) return;
       const message = $("q").value.trim();
       if (!message) return;
       $("btnAsk").disabled = true;
       $("chatStatus").textContent = "Asking…";
       $("chatStatus").className = "status";
-      $("answer").hidden = true;
-      $("sources").textContent = "";
+      appendUserBubble(message);
+      const { bubble, meta } = appendAssistantThinking();
       try {
         const recipe = $("recipeMode").checked;
         const url = recipe ? "/api/recipe-chat" : "/api/chat";
@@ -290,24 +1061,38 @@
           }
           throw new Error(detail || r.statusText);
         }
-        $("answer").textContent = j.answer;
-        $("answer").hidden = false;
-        let src = "";
-        if (recipe && (j.matches || []).length) {
-          src = "Matches: " + j.matches.map((m) => `${m.title} (p.${m.page}, ${m.score})`).join(" · ");
-        } else {
-          src = (j.sources || []).map((s) => `p.${s.page} (${s.score})`).join(" · ");
-          if (src) src = "Sources: " + src;
-        }
-        $("sources").textContent = src;
+        bubble.removeAttribute("aria-busy");
+        bubble.classList.remove("bubble-thinking");
+        bubble.classList.remove("bubble-err");
+        bubble.textContent = j.answer;
+        fillSourceChips(meta, recipe, j);
         $("chatStatus").textContent = "Done.";
         $("chatStatus").className = "status ok";
+        $("q").value = "";
+        $("q").focus();
+        scrollChatToBottom();
       } catch (e) {
-        $("chatStatus").textContent = String(e.message || e);
+        bubble.removeAttribute("aria-busy");
+        bubble.classList.remove("bubble-thinking");
+        bubble.classList.add("bubble-err");
+        bubble.textContent = String(e.message || e);
+        meta.textContent = "";
+        $("chatStatus").textContent = "Error.";
         $("chatStatus").className = "status err";
       }
       $("btnAsk").disabled = false;
+    }
+
+    $("btnAsk").onclick = () => {
+      submitAsk();
     };
+
+    $("q").addEventListener("keydown", (e) => {
+      if (e.isComposing || e.key === "Process") return;
+      if (e.key !== "Enter" || e.shiftKey) return;
+      e.preventDefault();
+      submitAsk();
+    });
 
     $("btnStt").onclick = () => {
       if (!stt) return;
@@ -344,6 +1129,39 @@
         $("srvStatus").textContent = "Health check failed.";
       });
     initStt();
+
+    (function initComposerCollapse() {
+      const coPan = document.getElementById("composerPanel");
+      const coTog = document.getElementById("btnComposerToggle");
+      if (!coPan || !coTog) return;
+      const icon = coTog.querySelector(".composer-toggle-icon");
+      const lbl = coTog.querySelector(".composer-toggle-label");
+      function applyCollapsedUi(collapsed) {
+        coTog.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        coTog.title = collapsed
+          ? "Show ask and search panel"
+          : "Hide ask and search panel to read the chat";
+        if (icon) icon.textContent = collapsed ? "▲" : "▼";
+        if (lbl) lbl.textContent = collapsed ? "Show search" : "Hide search";
+      }
+      coTog.addEventListener("click", () => {
+        if (!window.matchMedia("(max-width: 720px)").matches) return;
+        const collapsed = coPan.classList.toggle("composer--collapsed");
+        applyCollapsedUi(collapsed);
+        scrollChatToBottom();
+      });
+      window.addEventListener("resize", () => {
+        if (!window.matchMedia("(max-width: 720px)").matches && coPan.classList.contains("composer--collapsed")) {
+          coPan.classList.remove("composer--collapsed");
+          applyCollapsedUi(false);
+        }
+      });
+    })();
+
+    if (window.matchMedia("(max-width: 720px)").matches) {
+      const dr = document.querySelector(".pdf-drawer");
+      if (dr) dr.removeAttribute("open");
+    }
     refreshStatus();
   </script>
 </body>

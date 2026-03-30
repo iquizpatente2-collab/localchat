@@ -12,6 +12,47 @@ def _strip_step_num(s: str) -> str:
     return re.sub(r"^\d+[\).\]]\s*", "", s.strip())
 
 
+def _looks_like_heading(line: str) -> bool:
+    s = line.strip()
+    if not s:
+        return False
+    if re.fullmatch(r"\d+[a-z]?", s.lower()):
+        return False
+    if len(re.findall(r"[A-Za-z]", s)) < 4:
+        return False
+    if len(s) > 70:
+        return False
+    letters = [c for c in s if c.isalpha()]
+    if not letters:
+        return False
+    upper_ratio = sum(1 for c in letters if c.isupper()) / len(letters)
+    return upper_ratio >= 0.65
+
+
+def _best_title_fallback(lines: list[str]) -> str:
+    cleaned = [x.strip() for x in lines if x.strip()]
+    for i, ln in enumerate(cleaned[:20]):
+        if not _looks_like_heading(ln):
+            continue
+        title = ln
+        if i + 1 < len(cleaned) and re.fullmatch(r"\([^)]+\)", cleaned[i + 1]):
+            title = f"{title} {cleaned[i + 1]}"
+        return title[:200]
+    for ln in cleaned[:20]:
+        if len(ln) >= 6 and len(re.findall(r"[A-Za-z]", ln)) >= 4:
+            return ln[:200]
+    return ""
+
+
+def infer_title_from_text(text: str) -> str:
+    """Best-effort title extraction from OCR/prose page text."""
+    raw = (text or "").strip()
+    if not raw:
+        return "Untitled"
+    title = _best_title_fallback(raw.splitlines())
+    return title or "Untitled"
+
+
 def parse_structured_recipe(text: str) -> dict[str, str | list[str]]:
     """
     Expect sections Recipe Name / Ingredients / Instructions (case-insensitive).
@@ -63,8 +104,8 @@ def parse_structured_recipe(text: str) -> dict[str, str | list[str]]:
             instructions.append(_strip_step_num(ls))
 
     title = " ".join(title_parts).strip()
-    if not title and lines:
-        title = lines[0].strip()[:200]
+    if not title:
+        title = infer_title_from_text(raw)
     if not title:
         title = "Untitled"
 

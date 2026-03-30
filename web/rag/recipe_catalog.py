@@ -94,6 +94,14 @@ def expand_query_for_embedding(query: str) -> str:
                 "italian tomato sauce",
             ]
         )
+    if {"pollo", "fritto"} <= words or {"fried", "chicken"} <= words:
+        extra.extend(
+            [
+                "fried chicken",
+                "pollo fritto",
+                "chicken fried in oil",
+            ]
+        )
     if not extra:
         return query
     return f"{query} {' '.join(extra)}"
@@ -172,6 +180,22 @@ def _query_intent_adjustment(query: str, title: str, blob: str, score: float) ->
         if ("uova al pomidoro" in title_blob) or ("eggs with tomatoes" in title_blob):
             score -= 0.12
 
+    # Fried chicken bilingual bridge ("fried chicken" <-> "pollo fritto").
+    asks_fried_chicken = (
+        {"fried", "chicken"} <= q_words
+        or {"pollo", "fritto"} <= q_words
+    )
+    has_fried_chicken = (
+        ("fried chicken" in title_blob)
+        or ("pollo fritto" in title_blob)
+        or ("polio fritto" in title_blob)  # OCR variant observed in this book
+    )
+    if asks_fried_chicken:
+        if has_fried_chicken:
+            score += 0.26
+        else:
+            score *= 0.70
+
     return float(max(0.0, min(1.0, score)))
 
 
@@ -195,6 +219,68 @@ def _token_coverage_score(query: str, title: str, blob: str) -> float:
         if t in t_lo or _compact_alnum(t) in t_compact:
             hit += 1
     return hit / max(1, len(qtok))
+
+
+def _query_content_bigrams(query: str) -> list[tuple[str, str]]:
+    """Consecutive non-stop tokens (length >= 3) for phrase-level checks."""
+    toks = [
+        t
+        for t in re.findall(r"[a-z0-9]+", query.lower())
+        if t not in _LIGHT_STOP and len(t) >= 3
+    ]
+    if len(toks) < 2:
+        return []
+    return [(toks[i], toks[i + 1]) for i in range(len(toks) - 1)]
+
+
+def _bigram_match_score(a: str, b: str, title: str, blob: str) -> float:
+    """
+    How well a query bigram matches the candidate (1.0 = exact phrase or tight proximity).
+    Downweights pages that mention both words far apart (e.g. soup with 'chicken' and
+    unrelated 'fried in deep fat' for croutons) when the user asked for a phrase like
+    'fried chicken'.
+    """
+    text = f"{title} {blob}".lower()
+    if not text.strip():
+        return 1.0
+    phrase = f"{a} {b}"
+    if phrase in text:
+        return 1.0
+    ctext = _compact_alnum(text)
+    if _compact_alnum(a + b) in ctext:
+        return 1.0
+    if a not in text or b not in text:
+        return 0.45
+    # Proximity window: both tokens must appear near each other to count as a real phrase hit.
+    span = max(len(a), len(b)) + 96
+    i = 0
+    while True:
+        pa = text.find(a, i)
+        if pa < 0:
+            break
+        win = text[pa : pa + span]
+        if b in win:
+            return 0.9
+        i = pa + 1
+    i = 0
+    while True:
+        pb = text.find(b, i)
+        if pb < 0:
+            break
+        win = text[pb : pb + span]
+        if a in win:
+            return 0.9
+        i = pb + 1
+    # Both tokens exist but never in the same local window — weak match.
+    return 0.48
+
+
+def _multi_bigram_score(query: str, title: str, blob: str) -> float:
+    pairs = _query_content_bigrams(query)
+    if not pairs:
+        return 1.0
+    scores = [_bigram_match_score(a, b, title, blob) for a, b in pairs]
+    return float(min(scores))
 
 
 def _cosine_matrix(q: np.ndarray, M: np.ndarray) -> np.ndarray:
@@ -351,8 +437,20 @@ class RecipeCatalog:
             cov = _token_coverage_score(query, title, blob)
             # Strongly prefer candidates that actually cover the query focus tokens.
             combined = (combined * 0.82) + (cov * 0.18)
+            bgram = _multi_bigram_score(query, title, blob)
+            combined *= bgram
             scored.append(
-                (i, combined, {"embed": emb_n, "fuzzy": fz, "coverage": cov, "cosine_raw": cos})
+                (
+                    i,
+                    combined,
+                    {
+                        "embed": emb_n,
+                        "fuzzy": fz,
+                        "coverage": cov,
+                        "bigram": bgram,
+                        "cosine_raw": cos,
+                    },
+                )
             )
 
         scored.sort(key=lambda x: x[1], reverse=True)

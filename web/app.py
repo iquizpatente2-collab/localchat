@@ -58,6 +58,7 @@ from web.rag.recipe_prompts import (
     PROMPT_VAGUE,
     format_recipes_for_prompt,
 )
+from web.rag.recipe_parse import infer_title_from_text
 from web.rag.store import VectorStore
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -68,6 +69,7 @@ RECIPE_STORE_DIR = DATA_DIR / "recipe_store"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 DOCS_DIR = ROOT / "docs"
 STATE_PATH = STORE_DIR / "source_state.json"
+CURRENT_MANUAL_PATH = MANUALS_DIR / "current_manual.pdf"
 
 MANUALS_DIR.mkdir(parents=True, exist_ok=True)
 STORE_DIR.mkdir(parents=True, exist_ok=True)
@@ -161,6 +163,29 @@ def _save_state(state: dict) -> None:
     STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _clear_runtime_indexes() -> None:
+    """Remove persisted RAG/recipe index artifacts and reset in-memory stores."""
+    for p in (
+        STORE_DIR / "meta.json",
+        STORE_DIR / "embeddings.npy",
+        STATE_PATH,
+        RECIPE_STORE_DIR / "recipes.json",
+        RECIPE_STORE_DIR / "recipe_embeddings.npy",
+    ):
+        try:
+            if p.exists():
+                p.unlink()
+        except Exception:
+            pass
+    store.chunks = []
+    store.embeddings = None
+    store.source_file = None
+    recipe_catalog.recipes = []
+    recipe_catalog.embeddings = None
+    recipe_catalog.source_file = None
+    recipe_catalog._faiss_index = None
+
+
 def _infer_recipe_mode(q: str) -> str:
     ql = q.lower().strip()
     if re.search(r"\b(why|how come|explain why|reason (these|those|they))\b", ql):
@@ -186,11 +211,13 @@ def _recipe_user_prompt(mode: str, query: str, recipes_block: str) -> str:
 
 def _grounded_recipe_answer(query: str, recipe: dict, parts: dict[str, float]) -> str:
     """Deterministic, citation-friendly answer that only uses extracted catalog fields."""
-    title = (recipe.get("title") or "Untitled").strip()
+    title = (recipe.get("title") or "").strip()
     page = recipe.get("page", "?")
     ingredients = [str(x).strip() for x in (recipe.get("ingredients") or []) if str(x).strip()]
     instructions = [str(x).strip() for x in (recipe.get("instructions") or []) if str(x).strip()]
     full_text = (recipe.get("full_text") or "").strip()
+    if len(title) < 4 or len(re.findall(r"[A-Za-z]", title)) < 3:
+        title = infer_title_from_text(full_text)
     fallback_steps = _fallback_steps_from_prose(full_text)
 
     lines: list[str] = [
@@ -217,10 +244,18 @@ def _grounded_recipe_answer(query: str, recipe: dict, parts: dict[str, float]) -
         "Source note: This output is grounded only in extracted PDF text "
         f"(page {page})."
     )
+    cov = parts.get("coverage")
+    bg = parts.get("bigram")
+    tail = f"(embed={parts.get('embed', 0.0):.3f}, fuzzy={parts.get('fuzzy', 0.0):.3f}"
+    if cov is not None:
+        tail += f", coverage={float(cov):.3f}"
+    if bg is not None:
+        tail += f", phrase={float(bg):.3f}"
+    tail += ")."
     lines.append(
         f"Match reason for query '{query}': hybrid="
         f"{parts.get('embed', 0.0) * RECIPE_W_EMBED + parts.get('fuzzy', 0.0) * RECIPE_W_FUZZY:.3f} "
-        f"(embed={parts.get('embed', 0.0):.3f}, fuzzy={parts.get('fuzzy', 0.0):.3f})."
+        + tail
     )
     if full_text:
         lines.append("")
@@ -740,7 +775,7 @@ def create_app() -> FastAPI:
         if not file.filename or not file.filename.lower().endswith(".pdf"):
             raise HTTPException(400, "Please upload a .pdf file")
 
-        dest = MANUALS_DIR / "current_manual.pdf"
+        dest = CURRENT_MANUAL_PATH
         data = await file.read()
         if len(data) > 40 * 1024 * 1024:
             raise HTTPException(400, "File too large (max 40 MB)")
@@ -757,6 +792,36 @@ def create_app() -> FastAPI:
             "chunks": n,
             "filename": file.filename,
         }
+
+    @app.delete("/api/upload")
+    async def remove_uploaded_manual():
+        """Remove manually uploaded PDF from manuals/current_manual.pdf (does not change active index)."""
+        try:
+            existed = CURRENT_MANUAL_PATH.exists()
+            if existed:
+                CURRENT_MANUAL_PATH.unlink()
+            return {
+                "ok": True,
+                "removed": existed,
+                "path": str(CURRENT_MANUAL_PATH.relative_to(ROOT)),
+            }
+        except Exception as e:
+            raise HTTPException(500, f"Failed to remove uploaded manual: {e}") from e
+
+    @app.post("/api/use-docs")
+    async def use_docs_pdf():
+        """Rebuild active indexes from docs PDF and make docs the source of truth."""
+        docs_pdf = _pick_docs_pdf()
+        if docs_pdf is None:
+            raise HTTPException(400, "No docs PDF found. Put a .pdf file in docs/ or set RAG_DOCS_FILE.")
+
+        async with _store_lock:
+            try:
+                _clear_runtime_indexes()
+                n = await _build_index_from_pdf(docs_pdf, source_name=docs_pdf.name)
+            except Exception as e:
+                raise HTTPException(500, f"Docs reindex failed: {e}") from e
+        return {"ok": True, "chunks": n, "source": docs_pdf.name}
 
     @app.post("/api/chat")
     async def chat(body: ChatBody):
