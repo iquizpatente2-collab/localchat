@@ -9,6 +9,22 @@ Env:
   OLLAMA_EMBED_MODEL   default nomic-embed-text
   OLLAMA_CHAT_MODEL    default qwen3.5:9b
   RAG_TOP_K            default 5
+  RAG_RECIPE_NORMALIZE       0|1 — if 1, normalize recipe-like pages via Ollama before chunking/embed
+  RAG_RECIPE_NORMALIZE_MODE  auto|all — auto skips index pages and non-recipe text
+  RAG_RECIPE_MODEL           optional; defaults to OLLAMA_CHAT_MODEL
+  RAG_RECIPE_MAX_PAGE_CHARS  max chars per page sent to the normalizer (default 12000)
+  RAG_RECIPE_CONCURRENCY     parallel Ollama /api/chat calls while normalizing (default 12; try 8–16 for GPU)
+  RAG_EMBED_CONCURRENCY      parallel embedding requests (default 16)
+  OLLAMA_NUM_PARALLEL        set on the Ollama server (e.g. 8) so the daemon accepts enough concurrent jobs
+  RAG_RECIPE_TIMEOUT_S       per-page chat timeout (default 300)
+  (Startup repair: if chunk cache exists but recipe_store is missing, re-ingest skips LLM
+   normalize so the server is not blocked for hours — set RAG_REPAIR_FULL_NORMALIZE=1 to force it.)
+
+  Recipe index (structured + fuzzy + semantic hybrid):
+  RECIPE_W_EMBED / RECIPE_W_FUZZY   hybrid weights (default 0.6 / 0.4)
+  RECIPE_TOP_K                      top recipes after hybrid rank (default 5)
+  RECIPE_CHAT_MAX_TOKENS            LLM budget for /api/recipe-chat (default 600)
+  RECIPE_QUERY_SPELLCHECK           1 to enable TextBlob correction (optional: pip install textblob)
 """
 from __future__ import annotations
 
@@ -19,25 +35,43 @@ import re
 from pathlib import Path
 
 import aiohttp
+import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from web.rag.ingest import ingest_pdf_chunks
+from web.rag.ingest import extract_pages_cleaned, pages_to_chunks
 from web.rag.ollama_rag import ollama_chat, ollama_embed, embed_many
+from web.rag.recipe_catalog import (
+    FAISS_AVAILABLE,
+    RecipeCatalog,
+    build_recipe_embeddings_texts,
+    expand_query_for_embedding,
+    maybe_spell_correct,
+)
+from web.rag.recipe_normalize import normalize_recipe_pages, page_should_normalize
+from web.rag.recipe_prompts import (
+    PROMPT_DIRECT_RECIPE,
+    PROMPT_EXPLAIN_MATCH,
+    PROMPT_SHOW_MATCHING,
+    PROMPT_VAGUE,
+    format_recipes_for_prompt,
+)
 from web.rag.store import VectorStore
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 MANUALS_DIR = DATA_DIR / "manuals"
 STORE_DIR = DATA_DIR / "rag_store"
+RECIPE_STORE_DIR = DATA_DIR / "recipe_store"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 DOCS_DIR = ROOT / "docs"
 STATE_PATH = STORE_DIR / "source_state.json"
 
 MANUALS_DIR.mkdir(parents=True, exist_ok=True)
 STORE_DIR.mkdir(parents=True, exist_ok=True)
+RECIPE_STORE_DIR.mkdir(parents=True, exist_ok=True)
 
 EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "qwen3.5:9b")
@@ -50,6 +84,33 @@ RAG_AUTO_DOCS = os.environ.get("RAG_AUTO_DOCS", "1").strip() not in {"0", "false
 LEXICAL_K = int(os.environ.get("RAG_LEXICAL_K", "18"))
 VECTOR_K = int(os.environ.get("RAG_VECTOR_K", "12"))
 
+RAG_RECIPE_NORMALIZE = os.environ.get("RAG_RECIPE_NORMALIZE", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+RAG_RECIPE_NORMALIZE_MODE = os.environ.get("RAG_RECIPE_NORMALIZE_MODE", "auto").strip().lower()
+if RAG_RECIPE_NORMALIZE_MODE not in {"auto", "all"}:
+    RAG_RECIPE_NORMALIZE_MODE = "auto"
+RAG_RECIPE_MODEL = os.environ.get("RAG_RECIPE_MODEL", "").strip() or CHAT_MODEL
+RAG_RECIPE_MAX_PAGE_CHARS = int(os.environ.get("RAG_RECIPE_MAX_PAGE_CHARS", "12000"))
+RAG_RECIPE_CONCURRENCY = int(os.environ.get("RAG_RECIPE_CONCURRENCY", "12"))
+RAG_RECIPE_TIMEOUT_S = float(os.environ.get("RAG_RECIPE_TIMEOUT_S", "300"))
+RAG_REPAIR_FULL_NORMALIZE = os.environ.get("RAG_REPAIR_FULL_NORMALIZE", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
+RECIPE_W_EMBED = float(os.environ.get("RECIPE_W_EMBED", "0.6"))
+RECIPE_W_FUZZY = float(os.environ.get("RECIPE_W_FUZZY", "0.4"))
+RECIPE_TOP_K = int(os.environ.get("RECIPE_TOP_K", "5"))
+RECIPE_CHAT_MAX_TOKENS = int(os.environ.get("RECIPE_CHAT_MAX_TOKENS", "600"))
+RECIPE_SYSTEM = (
+    "You only use the recipes provided in the user message. "
+    "Never invent dishes, ingredients, or steps that are not supported by those recipes."
+)
+
 RAG_SYSTEM = """You are a manual assistant. Use ONLY the provided manual excerpts to answer.
 
 The source may have OCR or printing typos (e.g. "Pomidoro" vs "Pomodoro") and may give the same recipe in English and Italian (e.g. "TOMATO SAUCE" and "Salsa di …"). Treat those as the same dish when the meaning matches.
@@ -59,7 +120,23 @@ If a "Retrieval note" below explains that the manual spells a word differently o
 Summarize steps from the best-matching excerpt. If the excerpts are unrelated or insufficient, say so briefly. Stay concise unless the user asks for detail."""
 
 store = VectorStore(STORE_DIR)
+recipe_catalog = RecipeCatalog(RECIPE_STORE_DIR)
 _store_lock = asyncio.Lock()
+
+
+def _recipe_query_embedding_ok(qvec: np.ndarray) -> tuple[bool, str]:
+    """Ensure live Ollama embeddings match the stored recipe matrix (common failure after model swap)."""
+    if recipe_catalog.embeddings is None:
+        return False, "recipe embeddings missing"
+    idx_dim = int(recipe_catalog.embeddings.shape[1])
+    q = np.asarray(qvec, dtype=np.float32).reshape(-1)
+    if q.shape[0] != idx_dim:
+        return (
+            False,
+            f"embedding dimension mismatch: query has {q.shape[0]} dims but recipe index has {idx_dim}. "
+            f"Re-ingest the PDF (or delete data/recipe_store) so it matches OLLAMA_EMBED_MODEL={EMBED_MODEL!r}.",
+        )
+    return True, ""
 
 
 def _file_signature(path: Path) -> dict:
@@ -84,6 +161,98 @@ def _save_state(state: dict) -> None:
     STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _infer_recipe_mode(q: str) -> str:
+    ql = q.lower().strip()
+    if re.search(r"\b(why|how come|explain why|reason (these|those|they))\b", ql):
+        return "explain"
+    if re.search(r"\b(list|show)\s+(all|every)|\ball recipes\b", ql):
+        return "list"
+    if re.search(r"\b(full|complete|entire)\s+recipe|whole recipe|give me the recipe\b", ql):
+        return "direct"
+    if re.search(r"\b(something|anything|similar(\s+to)?|recipe ideas?)\b", ql):
+        return "vague"
+    return "list"
+
+
+def _recipe_user_prompt(mode: str, query: str, recipes_block: str) -> str:
+    if mode == "explain":
+        return PROMPT_EXPLAIN_MATCH.format(QUERY=query, RECIPES=recipes_block)
+    if mode == "vague":
+        return PROMPT_VAGUE.format(QUERY=query, RECIPES=recipes_block)
+    if mode == "direct":
+        return PROMPT_DIRECT_RECIPE.format(QUERY=query, RECIPES=recipes_block)
+    return PROMPT_SHOW_MATCHING.format(QUERY=query, RECIPES=recipes_block)
+
+
+def _grounded_recipe_answer(query: str, recipe: dict, parts: dict[str, float]) -> str:
+    """Deterministic, citation-friendly answer that only uses extracted catalog fields."""
+    title = (recipe.get("title") or "Untitled").strip()
+    page = recipe.get("page", "?")
+    ingredients = [str(x).strip() for x in (recipe.get("ingredients") or []) if str(x).strip()]
+    instructions = [str(x).strip() for x in (recipe.get("instructions") or []) if str(x).strip()]
+    full_text = (recipe.get("full_text") or "").strip()
+    fallback_steps = _fallback_steps_from_prose(full_text)
+
+    lines: list[str] = [
+        f"Recipe Name: {title}",
+        "",
+        "Ingredients:",
+    ]
+    if ingredients:
+        lines.extend(f"- {x}" for x in ingredients)
+    else:
+        lines.append("- Not clearly extracted from source text")
+
+    lines.append("")
+    lines.append("Instructions:")
+    if instructions:
+        lines.extend(f"{i}. {x}" for i, x in enumerate(instructions, 1))
+    elif fallback_steps:
+        lines.extend(f"{i}. {x}" for i, x in enumerate(fallback_steps, 1))
+    else:
+        lines.append("1. Not clearly extracted from source text")
+
+    lines.append("")
+    lines.append(
+        "Source note: This output is grounded only in extracted PDF text "
+        f"(page {page})."
+    )
+    lines.append(
+        f"Match reason for query '{query}': hybrid="
+        f"{parts.get('embed', 0.0) * RECIPE_W_EMBED + parts.get('fuzzy', 0.0) * RECIPE_W_FUZZY:.3f} "
+        f"(embed={parts.get('embed', 0.0):.3f}, fuzzy={parts.get('fuzzy', 0.0):.3f})."
+    )
+    if full_text:
+        lines.append("")
+        lines.append("Extracted Source Text:")
+        lines.append(full_text if len(full_text) <= 3200 else full_text[:3200] + "\n[... truncated ...]")
+    return "\n".join(lines)
+
+
+def _fallback_steps_from_prose(full_text: str) -> list[str]:
+    """
+    If a recipe page is plain prose, split into sentence-like cooking steps.
+    Keeps source wording; only light cleanup.
+    """
+    if not full_text:
+        return []
+    txt = full_text.replace("\n", " ").strip()
+    txt = re.sub(r"\s+", " ", txt)
+    parts = re.split(r"(?<=[\.\!\?;])\s+", txt)
+    out: list[str] = []
+    for p in parts:
+        p = p.strip(" -\t")
+        if len(p) < 18:
+            continue
+        # Skip obvious running headers/boilerplate fragments.
+        if re.fullmatch(r"(index|continued|page\s+\d+)", p.lower()):
+            continue
+        out.append(p)
+        if len(out) >= 24:
+            break
+    return out
+
+
 def _pick_docs_pdf() -> Path | None:
     if RAG_DOCS_FILE:
         p = Path(RAG_DOCS_FILE)
@@ -99,20 +268,60 @@ def _pick_docs_pdf() -> Path | None:
     return pdfs[0] if pdfs else None
 
 
-async def _build_index_from_pdf(pdf_path: Path, source_name: str) -> int:
-    chunks = ingest_pdf_chunks(pdf_path)
-    if not chunks:
+async def _build_index_from_pdf(
+    pdf_path: Path,
+    source_name: str,
+    *,
+    apply_recipe_normalize: bool | None = None,
+) -> int:
+    """
+    apply_recipe_normalize: None = use env RAG_RECIPE_NORMALIZE; False = skip LLM page cleanup.
+    """
+    pages = extract_pages_cleaned(pdf_path)
+    if not pages:
         raise RuntimeError(f"No extractable text in {pdf_path.name}")
 
+    do_normalize = RAG_RECIPE_NORMALIZE if apply_recipe_normalize is None else apply_recipe_normalize
+    if do_normalize:
+        n_pages = len(pages)
+        to_norm = sum(
+            1 for _, t in pages if page_should_normalize(t, RAG_RECIPE_NORMALIZE_MODE)
+        )
+        print(
+            f"[RAG] Recipe normalize: mode={RAG_RECIPE_NORMALIZE_MODE!r} "
+            f"model={RAG_RECIPE_MODEL!r} parallel={RAG_RECIPE_CONCURRENCY} "
+            f"(~{to_norm}/{n_pages} pages) ..."
+        )
+        async with aiohttp.ClientSession() as session:
+            pages = await normalize_recipe_pages(
+                session,
+                pages,
+                chat_fn=ollama_chat,
+                model=RAG_RECIPE_MODEL,
+                mode=RAG_RECIPE_NORMALIZE_MODE,
+                max_chars=RAG_RECIPE_MAX_PAGE_CHARS,
+                concurrency=RAG_RECIPE_CONCURRENCY,
+                timeout_s=RAG_RECIPE_TIMEOUT_S,
+            )
+
+    chunks = pages_to_chunks(pages)
+    if not chunks:
+        raise RuntimeError(f"No chunks after processing {pdf_path.name}")
+
     print(f"[RAG] Ingesting {len(chunks)} chunks; embedding with {EMBED_MODEL} ...")
+    recipes, recipe_embed_texts = build_recipe_embeddings_texts(pages, source_name)
     async with aiohttp.ClientSession() as session:
         texts = [c["text"] for c in chunks]
         emb = await embed_many(session, texts, EMBED_MODEL)
+        recipe_emb = await embed_many(session, recipe_embed_texts, EMBED_MODEL)
 
     store.set_data(chunks, emb, source_file=source_name)
     store.save()
+    recipe_catalog.set_recipes_with_embeddings(recipes, recipe_emb, source_name)
     _save_state(_file_signature(pdf_path))
-    print(f"[RAG] Index saved: {len(chunks)} vectors")
+    print(
+        f"[RAG] Index saved: {len(chunks)} vectors; recipe catalog: {len(recipes)} pages"
+    )
     return len(chunks)
 
 
@@ -420,6 +629,16 @@ class ChatBody(BaseModel):
     message: str
 
 
+class RecipeChatBody(BaseModel):
+    message: str
+    mode: str = "grounded"
+
+
+class RecipeRankBody(BaseModel):
+    message: str
+    top_k: int = 5
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Localchat Manual RAG")
 
@@ -431,6 +650,14 @@ def create_app() -> FastAPI:
         else:
             print("[RAG] No index yet — upload a PDF manual.")
 
+        if recipe_catalog.load():
+            print(
+                f"[RAG] Loaded recipe catalog: {len(recipe_catalog.recipes)} recipes "
+                f"from {recipe_catalog.source_file!r}"
+            )
+        else:
+            print("[RAG] No recipe catalog on disk — ingest a PDF to build it.")
+
         if not RAG_AUTO_DOCS:
             return
 
@@ -441,13 +668,34 @@ def create_app() -> FastAPI:
         async with _store_lock:
             sig = _file_signature(docs_pdf)
             prev = _load_state()
-            if loaded and prev == sig:
+            cache_hit = loaded and prev == sig
+            rc_ready = bool(recipe_catalog.recipes) and recipe_catalog.embeddings is not None
+            if cache_hit and rc_ready:
                 print(f"[RAG] Using cached index for docs PDF: {docs_pdf.name}")
                 return
+            if cache_hit and not rc_ready:
+                print(
+                    f"[RAG] Cached chunk index OK but recipe catalog missing — "
+                    f"re-ingesting {docs_pdf.name} to build recipe_store."
+                )
+                if RAG_RECIPE_NORMALIZE and not RAG_REPAIR_FULL_NORMALIZE:
+                    print(
+                        "[RAG] Skipping LLM recipe normalize on this repair run (fast). "
+                        "Set RAG_REPAIR_FULL_NORMALIZE=1 to normalize during repair, or upload PDF again."
+                    )
 
             print(f"[RAG] Auto-indexing docs PDF: {docs_pdf}")
             try:
-                await _build_index_from_pdf(docs_pdf, source_name=docs_pdf.name)
+                repair_skip_norm = (
+                    cache_hit
+                    and not rc_ready
+                    and not RAG_REPAIR_FULL_NORMALIZE
+                )
+                await _build_index_from_pdf(
+                    docs_pdf,
+                    source_name=docs_pdf.name,
+                    apply_recipe_normalize=False if repair_skip_norm else None,
+                )
             except Exception as e:
                 print(f"[RAG] Auto-index failed: {e}")
 
@@ -468,12 +716,23 @@ def create_app() -> FastAPI:
         async with _store_lock:
             loaded = bool(store.chunks and store.embeddings is not None)
             n = len(store.chunks) if loaded else 0
+            rc_loaded = bool(recipe_catalog.recipes and recipe_catalog.embeddings is not None)
+            rec_dim = (
+                int(recipe_catalog.embeddings.shape[1])
+                if rc_loaded and recipe_catalog.embeddings is not None
+                else None
+            )
             return {
                 "loaded": loaded,
                 "chunks": n,
                 "source_file": store.source_file,
                 "embed_model": EMBED_MODEL,
                 "chat_model": CHAT_MODEL,
+                "recipe_catalog_loaded": rc_loaded,
+                "recipe_count": len(recipe_catalog.recipes) if rc_loaded else 0,
+                "recipe_source": recipe_catalog.source_file,
+                "recipe_embed_dim": rec_dim,
+                "recipe_index_backend": "faiss" if FAISS_AVAILABLE else "numpy",
             }
 
     @app.post("/api/upload")
@@ -586,6 +845,191 @@ def create_app() -> FastAPI:
             "sources": [
                 {"page": h[0].get("page"), "score": round(h[1], 4)}
                 for h in hits
+            ],
+        }
+
+    @app.post("/api/recipes/rank")
+    async def recipes_rank(body: RecipeRankBody):
+        """Layer 1–2 only: hybrid fuzzy + embedding ranks (no LLM)."""
+        q = (body.message or "").strip()
+        if not q:
+            raise HTTPException(400, "message is empty")
+        top_k = max(1, min(20, body.top_k))
+
+        async with _store_lock:
+            if not recipe_catalog.recipes or recipe_catalog.embeddings is None:
+                raise HTTPException(
+                    400,
+                    "No recipe catalog. Upload and ingest a PDF first.",
+                )
+            try:
+                async with aiohttp.ClientSession() as session:
+                    q_prep = maybe_spell_correct(q)
+                    q_embed = expand_query_for_embedding(q_prep)
+                    qvec = await ollama_embed(session, q_embed, EMBED_MODEL)
+                    ok, why = _recipe_query_embedding_ok(qvec)
+                    if not ok:
+                        raise HTTPException(502, why)
+                    ranked = recipe_catalog.combined_search(
+                        q_prep,
+                        qvec,
+                        top_k=top_k,
+                        w_embed=RECIPE_W_EMBED,
+                        w_fuzzy=RECIPE_W_FUZZY,
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(
+                    502,
+                    f"Recipe search failed ({type(e).__name__}): {e!s}. "
+                    "Check that Ollama is running and the embed model is loaded.",
+                ) from e
+
+        return {
+            "query": q,
+            "query_used": q_prep,
+            "results": [
+                {
+                    "title": r.get("title"),
+                    "page": r.get("page"),
+                    "score": round(comb, 5),
+                    "embed": round(parts["embed"], 5),
+                    "fuzzy": round(parts["fuzzy"], 5),
+                    "coverage": round(parts.get("coverage", 0.0), 5),
+                }
+                for r, comb, parts in ranked
+            ],
+        }
+
+    @app.post("/api/recipe-chat")
+    async def recipe_chat(body: RecipeChatBody):
+        """Fuzzy + semantic retrieval, then LLM formatting (layer 3)."""
+        q = (body.message or "").strip()
+        if not q:
+            raise HTTPException(400, "message is empty")
+        mode_in = (body.mode or "grounded").strip().lower()
+        if mode_in not in {"auto", "grounded", "list", "vague", "explain", "direct"}:
+            raise HTTPException(400, "mode must be auto|grounded|list|vague|explain|direct")
+
+        async with _store_lock:
+            if not recipe_catalog.recipes or recipe_catalog.embeddings is None:
+                raise HTTPException(
+                    400,
+                    "No recipe catalog. Upload and ingest a PDF first.",
+                )
+            try:
+                async with aiohttp.ClientSession() as session:
+                    q_prep = maybe_spell_correct(q)
+                    q_embed = expand_query_for_embedding(q_prep)
+                    qvec = await ollama_embed(session, q_embed, EMBED_MODEL)
+                    ok, why = _recipe_query_embedding_ok(qvec)
+                    if not ok:
+                        raise HTTPException(502, why)
+                    ranked = recipe_catalog.combined_search(
+                        q_prep,
+                        qvec,
+                        top_k=RECIPE_TOP_K,
+                        w_embed=RECIPE_W_EMBED,
+                        w_fuzzy=RECIPE_W_FUZZY,
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(
+                    502,
+                    f"Recipe retrieval failed ({type(e).__name__}): {e!s}. "
+                    "Check that Ollama is running and `ollama pull "
+                    f"{EMBED_MODEL}` matches the model used to build data/recipe_store.",
+                ) from e
+
+        if not ranked:
+            raise HTTPException(500, "No matching recipes")
+
+        mode = "grounded" if mode_in == "auto" else mode_in
+        if mode == "grounded":
+            best_recipe, _best_score, best_parts = ranked[0]
+            answer = _grounded_recipe_answer(q_prep, best_recipe, best_parts)
+            return {
+                "answer": answer,
+                "model_used": "grounded-extractor",
+                "mode": mode,
+                "matches": [
+                    {
+                        "title": r.get("title"),
+                        "page": r.get("page"),
+                        "score": round(comb, 5),
+                        "embed": round(parts["embed"], 5),
+                        "fuzzy": round(parts["fuzzy"], 5),
+                        "coverage": round(parts.get("coverage", 0.0), 5),
+                    }
+                    for r, comb, parts in ranked
+                ],
+            }
+
+        recipes_only = [r for r, _, _ in ranked]
+        recipes_block = format_recipes_for_prompt(recipes_only)
+        user_prompt = _recipe_user_prompt(mode, q_prep, recipes_block)
+        messages = [
+            {"role": "system", "content": RECIPE_SYSTEM},
+            {"role": "user", "content": user_prompt},
+        ]
+        chat_options = {
+            "num_predict": RECIPE_CHAT_MAX_TOKENS,
+            "temperature": 0.2,
+        }
+        primary_err = None
+        used_model = CHAT_MODEL
+        try:
+            async with aiohttp.ClientSession() as session:
+                answer = await ollama_chat(
+                    session,
+                    CHAT_MODEL,
+                    messages,
+                    stream=False,
+                    options=chat_options,
+                    timeout_s=CHAT_TIMEOUT_S,
+                )
+        except Exception as e:
+            primary_err = str(e)
+            answer = ""
+
+        if not answer and CHAT_FALLBACK_MODEL and CHAT_FALLBACK_MODEL != CHAT_MODEL:
+            used_model = CHAT_FALLBACK_MODEL
+            try:
+                async with aiohttp.ClientSession() as session:
+                    answer = await ollama_chat(
+                        session,
+                        CHAT_FALLBACK_MODEL,
+                        messages,
+                        stream=False,
+                        options=chat_options,
+                        timeout_s=CHAT_TIMEOUT_S,
+                    )
+            except Exception as e:
+                raise HTTPException(
+                    502,
+                    f"Ollama chat failed. Primary ({CHAT_MODEL}): {primary_err}. "
+                    f"Fallback ({CHAT_FALLBACK_MODEL}): {e}",
+                ) from e
+
+        if not answer:
+            raise HTTPException(502, f"Ollama chat failed. Primary ({CHAT_MODEL}): {primary_err}")
+
+        return {
+            "answer": answer,
+            "model_used": used_model,
+            "mode": mode,
+            "matches": [
+                {
+                    "title": r.get("title"),
+                    "page": r.get("page"),
+                    "score": round(comb, 5),
+                    "embed": round(parts["embed"], 5),
+                    "fuzzy": round(parts["fuzzy"], 5),
+                    "coverage": round(parts.get("coverage", 0.0), 5),
+                }
+                for r, comb, parts in ranked
             ],
         }
 

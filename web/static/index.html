@@ -77,7 +77,12 @@
       margin-top: 0.5rem;
     }
     .status.ok { color: #5bd37a; }
-    .status.err { color: #f07178; }
+    .status.err {
+      color: #f07178;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
     .answer {
       white-space: pre-wrap;
       margin-top: 0.75rem;
@@ -97,7 +102,7 @@
 <body>
   <div class="wrap">
     <h1>Manual Q&amp;A (local)</h1>
-    <p class="sub">Upload a PDF manual, then ask questions. Uses Ollama embeddings + chat on your machine.</p>
+    <p class="sub">Upload a PDF manual, then ask questions. Uses Ollama embeddings + chat on your machine. Recipe PDFs: use <strong>Recipe search</strong> for fuzzy + semantic match, then LLM formatting.</p>
 
     <div class="panel">
       <label>1. Upload manual (PDF)</label>
@@ -108,7 +113,11 @@
 
     <div class="panel">
       <label>2. Ask about the manual</label>
-      <textarea id="q" placeholder="e.g. How do I reset the device to factory defaults?"></textarea>
+      <textarea id="q" placeholder="Manual: e.g. reset to defaults · Recipe: e.g. mutton cutlets, tomato sauce"></textarea>
+      <label style="margin-top:0.65rem;display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+        <input type="checkbox" id="recipeMode" />
+        <span>Recipe search (fuzzy + semantic hybrid, then LLM)</span>
+      </label>
       <button type="button" id="btnAsk">Ask</button>
       <div class="status" id="chatStatus"></div>
       <div class="answer" id="answer" hidden></div>
@@ -128,8 +137,11 @@
       try {
         const r = await fetch("/api/status");
         const j = await r.json();
+        const rc = j.recipe_catalog_loaded
+          ? ` · recipes ${j.recipe_count} (${j.recipe_index_backend || "?"})`
+          : "";
         $("srvStatus").textContent = j.loaded
-          ? `Index ready: ${j.chunks} chunks from ${j.source_file || "unknown"} · embed ${j.embed_model} · chat ${j.chat_model}`
+          ? `Index ready: ${j.chunks} chunks from ${j.source_file || "unknown"} · embed ${j.embed_model} · chat ${j.chat_model}${rc}`
           : "No manual loaded yet — upload a PDF.";
         $("srvStatus").className = "status " + (j.loaded ? "ok" : "");
       } catch (e) {
@@ -173,17 +185,35 @@
       $("answer").hidden = true;
       $("sources").textContent = "";
       try {
-        const r = await fetch("/api/chat", {
+        const recipe = $("recipeMode").checked;
+        const url = recipe ? "/api/recipe-chat" : "/api/chat";
+        const r = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message }),
+          body: JSON.stringify({ message, mode: recipe ? "grounded" : "auto" }),
         });
         const j = await r.json();
-        if (!r.ok) throw new Error(typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail));
+        if (!r.ok) {
+          let detail = `HTTP ${r.status}`;
+          if (j.detail !== undefined && j.detail !== null) {
+            detail = Array.isArray(j.detail)
+              ? j.detail
+                  .map((x) => (typeof x === "string" ? x : x.msg || JSON.stringify(x)))
+                  .join(". ")
+              : String(j.detail);
+          }
+          throw new Error(detail || r.statusText);
+        }
         $("answer").textContent = j.answer;
         $("answer").hidden = false;
-        const src = (j.sources || []).map((s) => `p.${s.page} (${s.score})`).join(" · ");
-        $("sources").textContent = src ? "Sources: " + src : "";
+        let src = "";
+        if (recipe && (j.matches || []).length) {
+          src = "Matches: " + j.matches.map((m) => `${m.title} (p.${m.page}, ${m.score})`).join(" · ");
+        } else {
+          src = (j.sources || []).map((s) => `p.${s.page} (${s.score})`).join(" · ");
+          if (src) src = "Sources: " + src;
+        }
+        $("sources").textContent = src;
         $("chatStatus").textContent = "Done.";
         $("chatStatus").className = "status ok";
       } catch (e) {

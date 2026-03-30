@@ -150,6 +150,127 @@ Localchat/   # or your clone directory name
 ├── client.log            # Log output for client debug
 ```
 
+## Web PDF Recipe Search (Current)
+
+The repo now includes a FastAPI web app for PDF-based manual/recipe retrieval:
+
+- Entry point: `web/app.py`
+- UI: `web/static/index.html`
+- Recipe retrieval modules: `web/rag/*`
+
+### What it does
+
+There are two query modes in the web UI:
+
+1. **Manual Q&A (checkbox OFF)**
+   - Uses chunk-level RAG retrieval from PDF text.
+   - Best for generic questions about the book/manual.
+
+2. **Recipe Search (checkbox ON)**
+   - Uses a structured recipe catalog + hybrid retrieval:
+     - fuzzy matching (`rapidfuzz`)
+     - semantic embedding similarity (`nomic-embed-text` by default)
+   - Returns a grounded recipe response (no free-form recipe invention by default).
+   - Includes match details (`score`, `embed`, `fuzzy`, `coverage`) to make ranking visible.
+
+### Retrieval / indexing pipeline
+
+PDF -> text extraction -> clean pages -> optional recipe normalize -> embeddings -> saved indexes.
+
+- Chunk index path: `data/rag_store/`
+- Recipe index path: `data/recipe_store/`
+
+The app auto-loads the newest PDF from `docs/` on startup (if `RAG_AUTO_DOCS` is enabled).
+If indexes are missing or stale, it rebuilds automatically.
+
+### Grounding behavior
+
+Recipe mode is configured for **accuracy-first grounding**:
+
+- Output is based only on extracted PDF text.
+- If structured ingredients/steps are missing, a deterministic prose fallback is used.
+- Source page is always included in the response.
+
+### Run (web app)
+
+From repo root:
+
+```bash
+pip install -r requirements.txt
+uvicorn web.app:app --host 0.0.0.0 --port 8080
+```
+
+Open:
+
+- [http://127.0.0.1:8080](http://127.0.0.1:8080)
+
+### Run checklist (quick)
+
+1. Start Ollama (`ollama serve`) and ensure models exist:
+   - `ollama pull nomic-embed-text`
+   - `ollama pull qwen3.5:9b` (or your chosen chat model)
+2. Put your PDF in `docs/` (or set `RAG_DOCS_FILE`).
+3. Start the app:
+
+```bash
+uvicorn web.app:app --host 0.0.0.0 --port 8080
+```
+
+4. Open [http://127.0.0.1:8080](http://127.0.0.1:8080)
+5. If using recipe mode and indexes are stale, ingest again (UI upload or clear `data/rag_store` + `data/recipe_store` and restart).
+
+### Useful environment variables (web/RAG)
+
+- `OLLAMA_HOST` (default `http://127.0.0.1:11434`)
+- `OLLAMA_EMBED_MODEL` (default `nomic-embed-text`)
+- `OLLAMA_CHAT_MODEL` (default `qwen3.5:9b`)
+- `RAG_AUTO_DOCS` (`1`/`0`)
+- `RAG_DOCS_FILE` (optional explicit PDF path)
+- `RAG_RECIPE_NORMALIZE` (`1`/`0`, expensive if enabled)
+- `RAG_RECIPE_NORMALIZE_MODE` (`auto` or `all`)
+- `RAG_RECIPE_CONCURRENCY` (normalize parallel chat calls)
+- `RAG_EMBED_CONCURRENCY` (parallel embedding requests)
+- `RECIPE_W_EMBED`, `RECIPE_W_FUZZY` (hybrid rank weights)
+- `RECIPE_TOP_K` (recipe candidates before response formatting)
+
+For better GPU utilization with concurrent Ollama requests, set `OLLAMA_NUM_PARALLEL` on the Ollama server.
+
+### Recipe query examples
+
+Try these in the web UI:
+
+- `what is salsa di pomidoro`
+- `how to make tomato sauce`
+- `how to prepare mutton cutlets`
+- `mutton cutlet recipe`
+- `filet of veal recipe`
+- `eggs with tomatoes`
+- `sauce for broiled fish`
+- `risotto con pecorino`
+
+Tip: if the query is dish-specific, keep **Recipe search** checked.
+
+### Troubleshooting (web/RAG)
+
+- **No recipe catalog. Upload and ingest a PDF first.**
+  - Recipe index is missing. Upload PDF in UI or restart after placing PDF in `docs/`.
+
+- **Server starts slowly / connection failed during startup**
+  - Initial indexing is still running.
+  - Set `RAG_RECIPE_NORMALIZE=0` for faster startup; normalization is expensive.
+
+- **Recipe results are wrong but fast**
+  - Re-ingest after code/setting changes.
+  - Keep recipe mode checked for dish queries; leave it unchecked for broad manual Q&A.
+
+- **Embedding dimension mismatch**
+  - Happens when `OLLAMA_EMBED_MODEL` changed after indexing.
+  - Rebuild `data/recipe_store` (and usually `data/rag_store`) with current model.
+
+- **GPU not fully utilized**
+  - Increase `OLLAMA_NUM_PARALLEL` (Ollama server side) carefully.
+  - Tune `RAG_RECIPE_CONCURRENCY` and `RAG_EMBED_CONCURRENCY` to match VRAM.
+
 ## Project Requirements
 
 #### Python Dependencies
@@ -160,23 +281,27 @@ Install all required Python packages via:
 pip install -r requirements.txt
 ```
 
-**`requirements.txt`**
+The canonical dependency list is in `requirements.txt`.
+Key web/RAG dependencies now include:
 
 ```
 aiofiles==23.2.1
 aiohttp==3.9.3
-asyncio
 numpy==1.26.4
-pyaudio==0.2.13
+pyaudio==0.2.14
 python-dotenv==1.0.1
 soxr==0.3.7
 soundfile==0.12.1
 websockets==12.0
 vosk==0.3.45
-gpiozero==2.0
-lgpio==0.0.4
 opencv-python==4.9.0.80
-mediapipe==0.10.9
+mediapipe>=0.10.13
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.9
+pypdf>=5.0.0
+rapidfuzz>=3.0.0
+faiss-cpu>=1.8.0
 ```
 
 > `pyaudio` may require `portaudio19-dev` to build correctly on some systems.

@@ -6,15 +6,51 @@ from pathlib import Path
 from pypdf import PdfReader
 
 
+def _page_extract_text(page) -> str:
+    """Prefer layout mode — often preserves gaps between words on older PDFs vs plain."""
+    try:
+        t = page.extract_text(extraction_mode="layout") or ""
+    except (TypeError, ValueError):
+        t = page.extract_text() or ""
+    if not t.strip():
+        t = page.extract_text() or ""
+    return t
+
+
 def extract_pdf_text(pdf_path: Path) -> tuple[str, list[tuple[int, str]]]:
     """Return full text and per-page segments for citation."""
     reader = PdfReader(str(pdf_path))
     pages: list[tuple[int, str]] = []
     for i, page in enumerate(reader.pages):
-        t = page.extract_text() or ""
+        t = _page_extract_text(page)
         pages.append((i + 1, t))
     full = "\n\n".join(f"[Page {p}]\n{text}" for p, text in pages if text.strip())
     return full, pages
+
+
+def extract_pages_cleaned(pdf_path: Path) -> list[tuple[int, str]]:
+    """Non-empty pages as (1-based page number, cleaned text)."""
+    reader = PdfReader(str(pdf_path))
+    out: list[tuple[int, str]] = []
+    for i, page in enumerate(reader.pages):
+        t = _clean_text(_page_extract_text(page))
+        if t:
+            out.append((i + 1, t))
+    return out
+
+
+def pages_to_chunks(
+    pages: list[tuple[int, str]],
+    chunk_size: int = 900,
+    overlap: int = 150,
+) -> list[dict]:
+    """Chunk each page's text; each chunk carries that page number."""
+    out: list[dict] = []
+    for page_no, t in pages:
+        for ch in chunk_text(t, chunk_size=chunk_size, overlap=overlap):
+            ch["page"] = page_no
+            out.append(ch)
+    return out
 
 
 def ingest_pdf_chunks(
@@ -23,23 +59,29 @@ def ingest_pdf_chunks(
     overlap: int = 150,
 ) -> list[dict]:
     """Extract text per page, chunk with overlap, attach page numbers."""
-    reader = PdfReader(str(pdf_path))
-    out: list[dict] = []
-    for i, page in enumerate(reader.pages):
-        t = page.extract_text() or ""
-        t = _clean_text(t)
-        if not t:
-            continue
-        for ch in chunk_text(t, chunk_size=chunk_size, overlap=overlap):
-            ch["page"] = i + 1
-            out.append(ch)
-    return out
+    return pages_to_chunks(
+        extract_pages_cleaned(pdf_path),
+        chunk_size=chunk_size,
+        overlap=overlap,
+    )
 
 
 def _clean_text(s: str) -> str:
+    s = _spacing_heuristic(s)
     s = re.sub(r"[ \t]+", " ", s)
     s = re.sub(r"\n{3,}", "\n\n", s)
     return s.strip()
+
+
+def _spacing_heuristic(s: str) -> str:
+    """
+    Mitigate PDF text runs where spaces were lost (common on scanned/older books).
+    Does not fix all cases; OCR or a dedicated repair pass may still be needed.
+    """
+    s = re.sub(r"([a-z])([A-Z][a-z])", r"\1 \2", s)
+    s = re.sub(r"([a-zA-Z])([0-9])", r"\1 \2", s)
+    s = re.sub(r"([0-9])([a-zA-Z])", r"\1 \2", s)
+    return s
 
 
 def chunk_text(

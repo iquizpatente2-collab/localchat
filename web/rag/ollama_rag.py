@@ -67,16 +67,41 @@ async def ollama_chat(
     return (data.get("message") or {}).get("content", "").strip()
 
 
+def _embed_concurrency() -> int:
+    return max(1, int(os.environ.get("RAG_EMBED_CONCURRENCY", "16")))
+
+
 async def embed_many(
     session: aiohttp.ClientSession,
     texts: list[str],
     model: str,
     batch_pause: float = 0.0,
+    *,
+    concurrency: int | None = None,
 ) -> np.ndarray:
-    """One embedding per chunk (Ollama-compatible across /api/embed and /api/embeddings)."""
-    vecs: list[np.ndarray] = []
-    for i, t in enumerate(texts):
-        vecs.append(await ollama_embed(session, t, model))
-        if batch_pause and i + 1 < len(texts):
-            await asyncio.sleep(batch_pause)
-    return np.stack(vecs, axis=0)
+    """
+    Embeddings in parallel (bounded) so Ollama can keep the GPU busier than strict serial calls.
+    Set RAG_EMBED_CONCURRENCY (default 16) or pass concurrency=.
+    (batch_pause is ignored when concurrency > 1.)
+    """
+    if not texts:
+        raise ValueError("embed_many: empty texts")
+    conc = max(1, concurrency if concurrency is not None else _embed_concurrency())
+    if conc == 1:
+        vecs: list[np.ndarray] = []
+        for i, t in enumerate(texts):
+            vecs.append(await ollama_embed(session, t, model))
+            if batch_pause and i + 1 < len(texts):
+                await asyncio.sleep(batch_pause)
+        return np.stack(vecs, axis=0)
+
+    sem = asyncio.Semaphore(conc)
+    n = len(texts)
+    out: list[np.ndarray | None] = [None] * n
+
+    async def one(i: int, t: str) -> None:
+        async with sem:
+            out[i] = await ollama_embed(session, t, model)
+
+    await asyncio.gather(*(one(i, t) for i, t in enumerate(texts)))
+    return np.stack([out[i] for i in range(n)], axis=0)
