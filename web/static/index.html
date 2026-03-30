@@ -59,6 +59,24 @@
       cursor: pointer;
       margin-top: 0.5rem;
     }
+    .btn-secondary {
+      background: #2a3544;
+      color: var(--text);
+      margin-left: 0.45rem;
+    }
+    .btn-recording {
+      background: #b94a48;
+      color: #fff;
+    }
+    select {
+      padding: 0.45rem 0.55rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      margin-left: 0.45rem;
+      margin-top: 0.5rem;
+    }
     button:disabled { opacity: 0.45; cursor: not-allowed; }
     textarea {
       width: 100%;
@@ -119,6 +137,11 @@
         <span>Recipe search (fuzzy + semantic hybrid, then LLM)</span>
       </label>
       <button type="button" id="btnAsk">Ask</button>
+      <button type="button" id="btnStt" class="btn-secondary">Start voice</button>
+      <select id="sttLang" title="Speech recognition language">
+        <option value="en-US" selected>Voice: English</option>
+        <option value="it-IT">Voice: Italiano</option>
+      </select>
       <div class="status" id="chatStatus"></div>
       <div class="answer" id="answer" hidden></div>
       <div class="sources" id="sources"></div>
@@ -132,6 +155,69 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let stt = null;
+    let sttActive = false;
+    let sttTranscript = "";
+    let sttStopRequested = false;
+
+    function setSttUi(active) {
+      const b = $("btnStt");
+      if (active) {
+        b.textContent = "Stop voice";
+        b.classList.add("btn-recording");
+        $("chatStatus").textContent = "Listening… click Stop voice to transcribe.";
+        $("chatStatus").className = "status";
+      } else {
+        b.textContent = "Start voice";
+        b.classList.remove("btn-recording");
+      }
+    }
+
+    function initStt() {
+      if (!SpeechRecognition) {
+        $("btnStt").disabled = true;
+        $("btnStt").textContent = "Voice unavailable";
+        $("sttLang").disabled = true;
+        return;
+      }
+      stt = new SpeechRecognition();
+      stt.lang = $("sttLang").value || "en-US";
+      stt.interimResults = true;
+      stt.continuous = true;
+
+      stt.onresult = (event) => {
+        let all = "";
+        for (let i = 0; i < event.results.length; i++) {
+          all += event.results[i][0].transcript + " ";
+        }
+        sttTranscript = all.trim();
+      };
+
+      stt.onerror = (event) => {
+        sttActive = false;
+        setSttUi(false);
+        $("chatStatus").textContent = `Speech recognition error: ${event.error || "unknown"}`;
+        $("chatStatus").className = "status err";
+      };
+
+      stt.onend = () => {
+        // Handle normal stop (user clicked Stop) and unexpected end.
+        const shouldFinalize = sttActive || sttStopRequested;
+        sttActive = false;
+        sttStopRequested = false;
+        setSttUi(false);
+        if (!shouldFinalize) return;
+        if (sttTranscript) {
+          $("q").value = sttTranscript;
+          $("chatStatus").textContent = "Voice transcribed to text.";
+          $("chatStatus").className = "status ok";
+        } else {
+          $("chatStatus").textContent = "No speech detected.";
+          $("chatStatus").className = "status err";
+        }
+      };
+    }
 
     async function refreshStatus() {
       try {
@@ -223,6 +309,31 @@
       $("btnAsk").disabled = false;
     };
 
+    $("btnStt").onclick = () => {
+      if (!stt) return;
+      if (!sttActive) {
+        stt.lang = $("sttLang").value || "en-US";
+        sttTranscript = "";
+        sttStopRequested = false;
+        sttActive = true;
+        setSttUi(true);
+        $("chatStatus").textContent = `Listening (${stt.lang})… click Stop voice to transcribe.`;
+        $("chatStatus").className = "status";
+        try {
+          stt.start();
+        } catch (e) {
+          sttActive = false;
+          setSttUi(false);
+          $("chatStatus").textContent = String(e.message || e);
+          $("chatStatus").className = "status err";
+        }
+      } else {
+        sttStopRequested = true;
+        sttActive = false;
+        stt.stop();
+      }
+    };
+
     fetch("/api/health")
       .then((r) => r.json())
       .then((j) => {
@@ -232,6 +343,7 @@
       .catch(() => {
         $("srvStatus").textContent = "Health check failed.";
       });
+    initStt();
     refreshStatus();
   </script>
 </body>
