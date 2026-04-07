@@ -395,6 +395,48 @@ class RecipeCatalog:
         idx = np.argsort(-scores)[:k]
         return [(int(i), float(scores[i])) for i in idx]
 
+    def fast_title_search(
+        self,
+        query: str,
+        *,
+        top_k: int = 5,
+        min_score: float = 0.86,
+    ) -> list[tuple[dict[str, Any], float, dict[str, float]]]:
+        """
+        Cheap lexical-only lookup for recipe titles.
+        Useful as a fast path before embedding calls for progress-style requests.
+        """
+        q = (query or "").strip().lower()
+        if not q or not self.recipes:
+            return []
+        cq = _compact_alnum(q)
+        scored: list[tuple[dict[str, Any], float, dict[str, float]]] = []
+        for r in self.recipes:
+            title = str(r.get("title") or "")
+            tl = title.lower()
+            ct = _compact_alnum(tl)
+            s1 = fuzz.token_set_ratio(q, tl) / 100.0
+            s2 = fuzz.partial_ratio(q, tl) / 100.0
+            s3 = (fuzz.partial_ratio(cq, ct) / 100.0) if len(cq) >= 4 and len(ct) >= 4 else 0.0
+            s = max(s1, s2, s3)
+            if s < min_score:
+                continue
+            scored.append(
+                (
+                    r,
+                    s,
+                    {
+                        "embed": 0.0,
+                        "fuzzy": s,
+                        "coverage": 1.0,
+                        "bigram": 1.0,
+                        "cosine_raw": 0.0,
+                    },
+                )
+            )
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[: max(1, top_k)]
+
     def combined_search(
         self,
         query: str,

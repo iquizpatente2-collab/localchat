@@ -25,6 +25,7 @@ Env:
   RECIPE_TOP_K                      top recipes after hybrid rank (default 5)
   RECIPE_CHAT_MAX_TOKENS            LLM budget for /api/recipe-chat (default 600)
   RECIPE_QUERY_SPELLCHECK           1 to enable TextBlob correction (optional: pip install textblob)
+  RECIPE_PROGRESS_MATCH             fuzzy threshold 0–1 for /api/recipe-progress (default 0.58)
 """
 from __future__ import annotations
 
@@ -32,6 +33,8 @@ import asyncio
 import json
 import os
 import re
+import time
+from collections import OrderedDict
 from pathlib import Path
 
 import aiohttp
@@ -40,6 +43,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from rapidfuzz import fuzz
 
 from web.rag.ingest import extract_pages_cleaned, pages_to_chunks
 from web.rag.ollama_rag import ollama_chat, ollama_embed, embed_many
@@ -59,6 +63,16 @@ from web.rag.recipe_prompts import (
     format_recipes_for_prompt,
 )
 from web.rag.recipe_parse import infer_title_from_text
+from web.rag.recipe_progress import (
+    extract_completed_from_natural_message,
+    fallback_steps_from_prose,
+    format_progress_answer,
+    infer_recipe_focus_query,
+    match_completed_steps,
+    split_recipe_progress_message,
+    split_user_completed_lines,
+    steps_from_recipe,
+)
 from web.rag.store import VectorStore
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -108,6 +122,12 @@ RECIPE_W_EMBED = float(os.environ.get("RECIPE_W_EMBED", "0.6"))
 RECIPE_W_FUZZY = float(os.environ.get("RECIPE_W_FUZZY", "0.4"))
 RECIPE_TOP_K = int(os.environ.get("RECIPE_TOP_K", "5"))
 RECIPE_CHAT_MAX_TOKENS = int(os.environ.get("RECIPE_CHAT_MAX_TOKENS", "600"))
+RECIPE_PROGRESS_MATCH = float(os.environ.get("RECIPE_PROGRESS_MATCH", "0.58"))
+RECIPE_FAST_TITLE_MIN_SCORE = float(os.environ.get("RECIPE_FAST_TITLE_MIN_SCORE", "0.86"))
+RECIPE_EMBED_CACHE_SIZE = max(0, int(os.environ.get("RECIPE_EMBED_CACHE_SIZE", "128")))
+RECIPE_SESSION_TTL_S = max(60, int(os.environ.get("RECIPE_SESSION_TTL_S", "7200")))
+RECIPE_SESSION_MAX = max(16, int(os.environ.get("RECIPE_SESSION_MAX", "300")))
+RECIPE_TITLE_MATCH_MIN_SCORE = float(os.environ.get("RECIPE_TITLE_MATCH_MIN_SCORE", "0.72"))
 RECIPE_SYSTEM = (
     "You only use the recipes provided in the user message. "
     "Never invent dishes, ingredients, or steps that are not supported by those recipes."
@@ -124,6 +144,8 @@ Summarize steps from the best-matching excerpt. If the excerpts are unrelated or
 store = VectorStore(STORE_DIR)
 recipe_catalog = RecipeCatalog(RECIPE_STORE_DIR)
 _store_lock = asyncio.Lock()
+_recipe_embed_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+_recipe_session_ctx: OrderedDict[str, dict] = OrderedDict()
 
 
 def _recipe_query_embedding_ok(qvec: np.ndarray) -> tuple[bool, str]:
@@ -139,6 +161,86 @@ def _recipe_query_embedding_ok(qvec: np.ndarray) -> tuple[bool, str]:
             f"Re-ingest the PDF (or delete data/recipe_store) so it matches OLLAMA_EMBED_MODEL={EMBED_MODEL!r}.",
         )
     return True, ""
+
+
+async def _embed_recipe_query_cached(session: aiohttp.ClientSession, text: str) -> np.ndarray:
+    """
+    In-memory LRU cache for recipe query embeddings.
+    Avoids repeated Ollama embed calls for similar follow-up requests.
+    """
+    key = f"{EMBED_MODEL}|{(text or '').strip().lower()}"
+    if RECIPE_EMBED_CACHE_SIZE > 0 and key in _recipe_embed_cache:
+        _recipe_embed_cache.move_to_end(key)
+        return _recipe_embed_cache[key]
+    qvec = await ollama_embed(session, text, EMBED_MODEL)
+    arr = np.asarray(qvec, dtype=np.float32).reshape(-1)
+    if RECIPE_EMBED_CACHE_SIZE > 0:
+        _recipe_embed_cache[key] = arr
+        _recipe_embed_cache.move_to_end(key)
+        while len(_recipe_embed_cache) > RECIPE_EMBED_CACHE_SIZE:
+            _recipe_embed_cache.popitem(last=False)
+    return arr
+
+
+def _prune_recipe_session_ctx(now_s: float | None = None) -> None:
+    now = time.time() if now_s is None else now_s
+    stale_keys = [
+        sid
+        for sid, ctx in _recipe_session_ctx.items()
+        if float(ctx.get("updated_at", 0.0)) < (now - RECIPE_SESSION_TTL_S)
+    ]
+    for sid in stale_keys:
+        _recipe_session_ctx.pop(sid, None)
+    while len(_recipe_session_ctx) > RECIPE_SESSION_MAX:
+        _recipe_session_ctx.popitem(last=False)
+
+
+def _session_get_recipe_ctx(session_id: str) -> dict | None:
+    if not session_id:
+        return None
+    _prune_recipe_session_ctx()
+    ctx = _recipe_session_ctx.get(session_id)
+    if ctx is not None:
+        _recipe_session_ctx.move_to_end(session_id)
+    return ctx
+
+
+def _session_set_recipe_ctx(
+    session_id: str,
+    *,
+    recipe_query: str,
+    recipe_title: str | None,
+    page: int | None,
+) -> None:
+    if not session_id:
+        return
+    now = time.time()
+    _recipe_session_ctx[session_id] = {
+        "recipe_query": (recipe_query or "").strip(),
+        "recipe_title": (recipe_title or "").strip(),
+        "page": page,
+        "updated_at": now,
+    }
+    _recipe_session_ctx.move_to_end(session_id)
+    _prune_recipe_session_ctx(now)
+
+
+def _recipe_from_session_ctx(ctx: dict | None) -> dict | None:
+    """Resolve previously matched recipe record from in-memory session context."""
+    if not ctx:
+        return None
+    page = ctx.get("page")
+    title = str(ctx.get("recipe_title") or "").strip().lower()
+    if page is None and not title:
+        return None
+    for r in recipe_catalog.recipes:
+        rp = r.get("page")
+        rt = str(r.get("title") or "").strip().lower()
+        if page is not None and rp == page:
+            return r
+        if title and rt and rt == title:
+            return r
+    return None
 
 
 def _file_signature(path: Path) -> dict:
@@ -184,6 +286,7 @@ def _clear_runtime_indexes() -> None:
     recipe_catalog.embeddings = None
     recipe_catalog.source_file = None
     recipe_catalog._faiss_index = None
+    _recipe_embed_cache.clear()
 
 
 def _infer_recipe_mode(q: str) -> str:
@@ -218,7 +321,7 @@ def _grounded_recipe_answer(query: str, recipe: dict, parts: dict[str, float]) -
     full_text = (recipe.get("full_text") or "").strip()
     if len(title) < 4 or len(re.findall(r"[A-Za-z]", title)) < 3:
         title = infer_title_from_text(full_text)
-    fallback_steps = _fallback_steps_from_prose(full_text)
+    fallback_steps = fallback_steps_from_prose(full_text)
 
     lines: list[str] = [
         f"Recipe Name: {title}",
@@ -262,30 +365,6 @@ def _grounded_recipe_answer(query: str, recipe: dict, parts: dict[str, float]) -
         lines.append("Extracted Source Text:")
         lines.append(full_text if len(full_text) <= 3200 else full_text[:3200] + "\n[... truncated ...]")
     return "\n".join(lines)
-
-
-def _fallback_steps_from_prose(full_text: str) -> list[str]:
-    """
-    If a recipe page is plain prose, split into sentence-like cooking steps.
-    Keeps source wording; only light cleanup.
-    """
-    if not full_text:
-        return []
-    txt = full_text.replace("\n", " ").strip()
-    txt = re.sub(r"\s+", " ", txt)
-    parts = re.split(r"(?<=[\.\!\?;])\s+", txt)
-    out: list[str] = []
-    for p in parts:
-        p = p.strip(" -\t")
-        if len(p) < 18:
-            continue
-        # Skip obvious running headers/boilerplate fragments.
-        if re.fullmatch(r"(index|continued|page\s+\d+)", p.lower()):
-            continue
-        out.append(p)
-        if len(out) >= 24:
-            break
-    return out
 
 
 def _pick_docs_pdf() -> Path | None:
@@ -662,16 +741,26 @@ def _merge_hits(
 
 class ChatBody(BaseModel):
     message: str
+    session_id: str = ""
 
 
 class RecipeChatBody(BaseModel):
     message: str
     mode: str = "grounded"
+    session_id: str = ""
 
 
 class RecipeRankBody(BaseModel):
     message: str
     top_k: int = 5
+    session_id: str = ""
+
+
+class RecipeProgressBody(BaseModel):
+    """First line or 'Recipe: …' = dish name; following lines = what you already did."""
+
+    message: str
+    session_id: str = ""
 
 
 def create_app() -> FastAPI:
@@ -931,7 +1020,7 @@ def create_app() -> FastAPI:
                 async with aiohttp.ClientSession() as session:
                     q_prep = maybe_spell_correct(q)
                     q_embed = expand_query_for_embedding(q_prep)
-                    qvec = await ollama_embed(session, q_embed, EMBED_MODEL)
+                    qvec = await _embed_recipe_query_cached(session, q_embed)
                     ok, why = _recipe_query_embedding_ok(qvec)
                     if not ok:
                         raise HTTPException(502, why)
@@ -967,10 +1056,152 @@ def create_app() -> FastAPI:
             ],
         }
 
+    @app.post("/api/recipe-progress")
+    async def recipe_progress(body: RecipeProgressBody):
+        """
+        Offline 'what's next': find recipe by hybrid search, fuzzy-match user lines to indexed steps.
+        Message format: first line = recipe name (or 'Recipe: Name'); following lines = completed work.
+        """
+        message = (body.message or "").strip()
+        session_id = (body.session_id or "").strip()
+        if not message:
+            raise HTTPException(400, "message is empty")
+        recipe_q, completed_raw = split_recipe_progress_message(message)
+        user_lines = split_user_completed_lines(completed_raw)
+        prev_ctx = _session_get_recipe_ctx(session_id)
+        prev_recipe_q = (prev_ctx or {}).get("recipe_query", "").strip() if prev_ctx else ""
+        prev_recipe_obj = _recipe_from_session_ctx(prev_ctx)
+        if not user_lines:
+            # Natural follow-up like "I have added salt... now what?".
+            user_lines = extract_completed_from_natural_message(message)
+        # If no explicit "completed steps" are present, fall back to normal grounded recipe QA.
+        progress_mode = bool(user_lines)
+        if progress_mode and recipe_q:
+            search_query = recipe_q.strip()
+        elif progress_mode and prev_recipe_q:
+            search_query = prev_recipe_q
+        else:
+            search_query = infer_recipe_focus_query(message).strip()
+            # If focus extraction is weak, keep conversational continuity.
+            if prev_recipe_q and search_query.lower() == message.lower():
+                search_query = prev_recipe_q
+        if not search_query:
+            raise HTTPException(400, "message is empty")
+
+        # For follow-up progress asks, prefer pinned session recipe to avoid drifting to another dish.
+        q_prep = maybe_spell_correct(search_query)
+        if progress_mode and prev_recipe_obj is not None:
+            ranked = [
+                (
+                    prev_recipe_obj,
+                    1.0,
+                    {
+                        "embed": 1.0,
+                        "fuzzy": 1.0,
+                        "coverage": 1.0,
+                    },
+                )
+            ]
+        else:
+            async with _store_lock:
+                if not recipe_catalog.recipes or recipe_catalog.embeddings is None:
+                    raise HTTPException(
+                        400,
+                        "No recipe catalog. Upload and ingest a PDF first.",
+                    )
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        fast_ranked = recipe_catalog.fast_title_search(
+                            q_prep,
+                            top_k=min(RECIPE_TOP_K, 3),
+                            min_score=RECIPE_FAST_TITLE_MIN_SCORE,
+                        )
+                        if fast_ranked:
+                            ranked = fast_ranked
+                        else:
+                            q_embed = expand_query_for_embedding(q_prep)
+                            qvec = await _embed_recipe_query_cached(session, q_embed)
+                            ok, why = _recipe_query_embedding_ok(qvec)
+                            if not ok:
+                                raise HTTPException(502, why)
+                            ranked = recipe_catalog.combined_search(
+                                q_prep,
+                                qvec,
+                                top_k=RECIPE_TOP_K,
+                                w_embed=RECIPE_W_EMBED,
+                                w_fuzzy=RECIPE_W_FUZZY,
+                            )
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    raise HTTPException(
+                        502,
+                        f"Recipe retrieval failed ({type(e).__name__}): {e!s}. "
+                        "Check that Ollama is running and the embed model matches the recipe index.",
+                    ) from e
+
+        if not ranked:
+            raise HTTPException(500, "No matching recipes")
+
+        best_recipe, _best_comb, best_parts = ranked[0]
+        if not progress_mode:
+            best_title = str(best_recipe.get("title") or "")
+            title_score = fuzz.token_set_ratio(q_prep.lower(), best_title.lower()) / 100.0
+            if title_score < RECIPE_TITLE_MATCH_MIN_SCORE:
+                raise HTTPException(
+                    422,
+                    "I could not confidently match your dish name to a recipe title in the indexed PDF. "
+                    "Try the exact recipe title from the book, or ask with 'recipe: <title>'.",
+                )
+        if progress_mode:
+            steps = steps_from_recipe(best_recipe)
+            done, matched_detail = match_completed_steps(
+                user_lines,
+                steps,
+                match_threshold=RECIPE_PROGRESS_MATCH,
+            )
+            answer = format_progress_answer(best_recipe, steps, done, matched_detail)
+            steps_total = len(steps)
+            steps_matched = sum(1 for d in done if d)
+            model_used = "offline-step-match"
+        else:
+            answer = _grounded_recipe_answer(q_prep, best_recipe, best_parts)
+            steps_total = 0
+            steps_matched = 0
+            model_used = "grounded-fallback"
+        _session_set_recipe_ctx(
+            session_id,
+            recipe_query=search_query,
+            recipe_title=str(best_recipe.get("title") or ""),
+            page=best_recipe.get("page"),
+        )
+
+        return {
+            "answer": answer,
+            "model_used": model_used,
+            "recipe_query": search_query,
+            "recipe_title": best_recipe.get("title"),
+            "page": best_recipe.get("page"),
+            "matches": [
+                {
+                    "title": r.get("title"),
+                    "page": r.get("page"),
+                    "score": round(comb, 5),
+                    "embed": round(parts["embed"], 5),
+                    "fuzzy": round(parts["fuzzy"], 5),
+                    "coverage": round(parts.get("coverage", 0.0), 5),
+                }
+                for r, comb, parts in ranked
+            ],
+            "steps_total": steps_total,
+            "steps_matched": steps_matched,
+        }
+
     @app.post("/api/recipe-chat")
     async def recipe_chat(body: RecipeChatBody):
         """Fuzzy + semantic retrieval, then LLM formatting (layer 3)."""
         q = (body.message or "").strip()
+        session_id = (body.session_id or "").strip()
         if not q:
             raise HTTPException(400, "message is empty")
         mode_in = (body.mode or "grounded").strip().lower()
@@ -1015,6 +1246,12 @@ def create_app() -> FastAPI:
         if mode == "grounded":
             best_recipe, _best_score, best_parts = ranked[0]
             answer = _grounded_recipe_answer(q_prep, best_recipe, best_parts)
+            _session_set_recipe_ctx(
+                session_id,
+                recipe_query=q_prep,
+                recipe_title=str(best_recipe.get("title") or ""),
+                page=best_recipe.get("page"),
+            )
             return {
                 "answer": answer,
                 "model_used": "grounded-extractor",
@@ -1080,6 +1317,14 @@ def create_app() -> FastAPI:
 
         if not answer:
             raise HTTPException(502, f"Ollama chat failed. Primary ({CHAT_MODEL}): {primary_err}")
+        if ranked:
+            best_recipe, _best_score, _best_parts = ranked[0]
+            _session_set_recipe_ctx(
+                session_id,
+                recipe_query=q_prep,
+                recipe_title=str(best_recipe.get("title") or ""),
+                page=best_recipe.get("page"),
+            )
 
         return {
             "answer": answer,
