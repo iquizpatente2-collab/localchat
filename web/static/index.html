@@ -382,23 +382,6 @@
     .control-row-pdf {
       margin-top: 0.35rem;
     }
-    .recipe-toggle {
-      display: flex;
-      align-items: center;
-      gap: 0.45rem;
-      margin-top: 0.55rem;
-      cursor: pointer;
-      color: var(--muted);
-      font-size: 0.84rem;
-    }
-    .recipe-progress-toggle {
-      margin-top: 0.3rem;
-      margin-left: 1.35rem;
-      font-size: 0.8rem;
-    }
-    .recipe-progress-toggle input:disabled + span {
-      opacity: 0.55;
-    }
     .status {
       font-size: 0.85rem;
       color: var(--muted);
@@ -681,15 +664,6 @@
         min-height: 72px;
         font-size: 16px; /* avoids iOS zoom-on-focus */
       }
-      .recipe-toggle {
-        font-size: 0.82rem;
-        line-height: 1.45;
-        align-items: flex-start;
-      }
-      .recipe-toggle input {
-        margin-top: 0.2rem;
-        flex-shrink: 0;
-      }
       .composer-controls {
         border-top: none;
         padding-top: 0;
@@ -755,7 +729,7 @@
     <div class="topbar">
       <div class="topbar-left">
         <h1>Manual Q&amp;A (local)</h1>
-        <p class="sub">Ask from PDF with manual mode or recipe mode.</p>
+        <p class="sub">Ask questions grounded in your indexed PDF.</p>
       </div>
       <div class="status-pill" id="srvStatus">Loading…</div>
     </div>
@@ -785,15 +759,7 @@
         </button>
         <div class="composer-body" id="composerBody">
           <label>Ask about the manual <span class="kbd-hint">Enter to send · Shift+Enter newline</span><span class="kbd-hint-mobile">Tap Ask to send</span></label>
-          <textarea id="q" placeholder="Manual: e.g. reset to defaults · Recipe: e.g. mutton cutlets, tomato sauce"></textarea>
-          <label class="recipe-toggle">
-            <input type="checkbox" id="recipeMode" />
-            <span>Recipe search (fuzzy + semantic hybrid, then LLM)</span>
-          </label>
-          <label class="recipe-toggle recipe-progress-toggle">
-            <input type="checkbox" id="recipeProgressMode" disabled />
-            <span>What’s next — I already did … (offline step match)</span>
-          </label>
+          <textarea id="q" placeholder="e.g. ingredients for tomato sauce, how long to bake, substitute for butter"></textarea>
           <div class="composer-controls">
             <div class="control-row control-row-primary">
               <button type="button" id="btnAsk">Ask</button>
@@ -825,28 +791,13 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const CHAT_SESSION_KEY = "localchat.session.id";
+    /** Prior turns for /api/chat (user/assistant pairs); capped client-side. */
+    const CHAT_HISTORY_MAX_MESSAGES = 12;
+    let chatHistory = [];
     let stt = null;
     let sttActive = false;
     let sttTranscript = "";
     let sttStopRequested = false;
-
-    function getChatSessionId() {
-      try {
-        let sid = localStorage.getItem(CHAT_SESSION_KEY);
-        if (!sid) {
-          sid =
-            "s-" +
-            Date.now().toString(36) +
-            "-" +
-            Math.random().toString(36).slice(2, 10);
-          localStorage.setItem(CHAT_SESSION_KEY, sid);
-        }
-        return sid;
-      } catch (_) {
-        return "s-ephemeral";
-      }
-    }
 
     function setSttUi(active) {
       const b = $("btnStt");
@@ -894,31 +845,10 @@
       return { bubble, meta };
     }
 
-    function truncateChip(s, max) {
-      if (!s) return "";
-      const t = String(s).trim();
-      return t.length <= max ? t : t.slice(0, max - 1) + "…";
-    }
-
-    function fillSourceChips(metaEl, recipeMode, data) {
+    function fillSourceChips(metaEl, data) {
       metaEl.textContent = "";
       const wrap = document.createElement("div");
       wrap.className = "source-chips";
-      if (recipeMode && (data.matches || []).length) {
-        for (const m of data.matches.slice(0, 8)) {
-          const chip = document.createElement("span");
-          chip.className = "source-chip";
-          const title = m.title || "";
-          chip.title = title;
-          const sc = Number(m.score);
-          const scoreStr = Number.isFinite(sc) ? sc.toFixed(2) : String(m.score ?? "");
-          const head = truncateChip(title, 26);
-          chip.textContent = head ? `${head} · p.${m.page} · ${scoreStr}` : `p.${m.page} · ${scoreStr}`;
-          wrap.appendChild(chip);
-        }
-        metaEl.appendChild(wrap);
-        return;
-      }
       const src = data.sources || [];
       for (const s of src.slice(0, 12)) {
         const chip = document.createElement("span");
@@ -1058,34 +988,10 @@
 
     $("btnClearChat").onclick = () => {
       $("chatMessages").innerHTML = "";
+      chatHistory = [];
       $("chatStatus").textContent = "";
       $("chatStatus").className = "status";
     };
-
-    function updateAskPlaceholder() {
-      const q = $("q");
-      const recipe = $("recipeMode").checked;
-      const progress = $("recipeProgressMode").checked;
-      if (!recipe) {
-        q.placeholder =
-          "Manual: e.g. reset to defaults · Recipe: e.g. mutton cutlets, tomato sauce";
-        return;
-      }
-      if (progress) {
-        q.placeholder =
-          "e.g. I am making risotto con piselli, I have browned the onions — or: line 1 = dish, next lines = done.";
-      } else {
-        q.placeholder = "Recipe: e.g. mutton cutlets, tomato sauce";
-      }
-    }
-
-    $("recipeMode").addEventListener("change", () => {
-      const r = $("recipeMode").checked;
-      $("recipeProgressMode").disabled = !r;
-      if (!r) $("recipeProgressMode").checked = false;
-      updateAskPlaceholder();
-    });
-    $("recipeProgressMode").addEventListener("change", updateAskPlaceholder);
 
     async function submitAsk() {
       if ($("btnAsk").disabled) return;
@@ -1097,23 +1003,11 @@
       appendUserBubble(message);
       const { bubble, meta } = appendAssistantThinking();
       try {
-        const recipe = $("recipeMode").checked;
-        const progress = recipe && $("recipeProgressMode").checked;
-        let url = "/api/chat";
-        let body;
-        if (progress) {
-          url = "/api/recipe-progress";
-          body = { message, session_id: getChatSessionId() };
-        } else if (recipe) {
-          url = "/api/recipe-chat";
-          body = { message, mode: "grounded", session_id: getChatSessionId() };
-        } else {
-          body = { message, mode: "auto", session_id: getChatSessionId() };
-        }
-        const r = await fetch(url, {
+        const historyPayload = chatHistory.slice(-CHAT_HISTORY_MAX_MESSAGES);
+        const r = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify({ message, history: historyPayload }),
         });
         const rawText = await r.text();
         let j = {};
@@ -1133,21 +1027,18 @@
           } else if (rawText && rawText.length < 200 && !rawText.trim().startsWith("{")) {
             detail = rawText.trim() || detail;
           }
-          if (
-            r.status === 404 &&
-            /not\s*found/i.test(String(detail)) &&
-            url.includes("recipe-progress")
-          ) {
-            detail +=
-              " Restart uvicorn from the project root so the app loads the latest code (route POST /api/recipe-progress).";
-          }
           throw new Error(detail || r.statusText);
         }
         bubble.removeAttribute("aria-busy");
         bubble.classList.remove("bubble-thinking");
         bubble.classList.remove("bubble-err");
         bubble.textContent = j.answer;
-        fillSourceChips(meta, recipe || progress, j);
+        fillSourceChips(meta, j);
+        chatHistory.push({ role: "user", content: message });
+        chatHistory.push({ role: "assistant", content: j.answer || "" });
+        if (chatHistory.length > CHAT_HISTORY_MAX_MESSAGES) {
+          chatHistory = chatHistory.slice(-CHAT_HISTORY_MAX_MESSAGES);
+        }
         $("chatStatus").textContent = "Done.";
         $("chatStatus").className = "status ok";
         $("q").value = "";
@@ -1244,7 +1135,6 @@
       const dr = document.querySelector(".pdf-drawer");
       if (dr) dr.removeAttribute("open");
     }
-    updateAskPlaceholder();
     refreshStatus();
   </script>
 </body>

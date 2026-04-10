@@ -7,8 +7,10 @@ Run from repository root:
 Env:
   OLLAMA_HOST          default http://127.0.0.1:11434
   OLLAMA_EMBED_MODEL   default nomic-embed-text
-  OLLAMA_CHAT_MODEL    default qwen3.5:9b
+  OLLAMA_CHAT_MODEL    default qwen2.5:3b
   RAG_TOP_K            default 5
+  RAG_MAX_TOKENS       manual chat output budget (default 480; two-part answers need more room)
+  RAG_CHAT_HISTORY_MAX max prior user/assistant turns sent with /api/chat (default 12)
   RAG_RECIPE_NORMALIZE       0|1 — if 1, normalize recipe-like pages via Ollama before chunking/embed
   RAG_RECIPE_NORMALIZE_MODE  auto|all — auto skips index pages and non-recipe text
   RAG_RECIPE_MODEL           optional; defaults to OLLAMA_CHAT_MODEL
@@ -42,7 +44,7 @@ import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from rapidfuzz import fuzz
 
 from web.rag.ingest import extract_pages_cleaned, pages_to_chunks
@@ -90,9 +92,10 @@ STORE_DIR.mkdir(parents=True, exist_ok=True)
 RECIPE_STORE_DIR.mkdir(parents=True, exist_ok=True)
 
 EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
-CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "qwen3.5:9b")
+CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "qwen2.5:3b")
 TOP_K = int(os.environ.get("RAG_TOP_K", "3"))
-MAX_TOKENS = int(os.environ.get("RAG_MAX_TOKENS", "220"))
+MAX_TOKENS = int(os.environ.get("RAG_MAX_TOKENS", "480"))
+RAG_CHAT_HISTORY_MAX = max(0, int(os.environ.get("RAG_CHAT_HISTORY_MAX", "12")))
 CHAT_TIMEOUT_S = float(os.environ.get("RAG_CHAT_TIMEOUT_S", "240"))
 CHAT_FALLBACK_MODEL = os.environ.get("OLLAMA_CHAT_FALLBACK", "qwen2.5:7b-instruct")
 RAG_DOCS_FILE = os.environ.get("RAG_DOCS_FILE", "").strip()
@@ -133,13 +136,19 @@ RECIPE_SYSTEM = (
     "Never invent dishes, ingredients, or steps that are not supported by those recipes."
 )
 
-RAG_SYSTEM = """You are a manual assistant. Use ONLY the provided manual excerpts to answer.
+RAG_SYSTEM = """You are a manual assistant for a cookbook-style PDF. You will receive prior conversation (if any), then manual excerpts, then the user's latest question.
 
-The source may have OCR or printing typos (e.g. "Pomidoro" vs "Pomodoro") and may give the same recipe in English and Italian (e.g. "TOMATO SAUCE" and "Salsa di …"). Treat those as the same dish when the meaning matches.
+Always answer in TWO clearly labeled parts:
 
-If a "Retrieval note" below explains that the manual spells a word differently or uses an English title, you MUST treat that recipe as answering the user's question. Do NOT say the recipe is "not mentioned" solely because one letter differs or the title is in English.
+1) **From the manual** — Only what is supported by the excerpts below. Quote or paraphrase faithfully (ingredients, steps, times, titles). If the excerpts do not contain a recipe or direct answer, say briefly that the manual does not cover it in these passages. Do NOT invent steps or ingredients here. Never cite or imply "the book says" anything that is not in the excerpts.
 
-Summarize steps from the best-matching excerpt. If the excerpts are unrelated or insufficient, say so briefly. Stay concise unless the user asks for detail."""
+2) **In my view (not from the manual)** — Short optional suggestions: modern substitutions, sides, safety tips, or variations using general cooking knowledge. This section MUST be clearly separate from part 1. You MUST NOT present this part as coming from the manual. If part 1 already fully answers a narrow factual question with no room for useful extras, you may use one line such as "No strong extras beyond the manual for this question."
+
+Rules:
+- OCR/typos: treat near-matches as the same dish when meaning matches (e.g. English vs Italian titles).
+- If a "Retrieval note" explains spelling/title variants, treat that recipe as matching the user's question.
+- Use conversation history only for understanding references ("it", "that dish"); facts still come from excerpts in part 1.
+- Stay concise unless the user asks for detail."""
 
 store = VectorStore(STORE_DIR)
 recipe_catalog = RecipeCatalog(RECIPE_STORE_DIR)
@@ -739,9 +748,15 @@ def _merge_hits(
     return ranked[:top_k]
 
 
+class ChatHistoryTurn(BaseModel):
+    role: str
+    content: str
+
+
 class ChatBody(BaseModel):
     message: str
     session_id: str = ""
+    history: list[ChatHistoryTurn] = Field(default_factory=list)
 
 
 class RecipeChatBody(BaseModel):
@@ -761,6 +776,44 @@ class RecipeProgressBody(BaseModel):
 
     message: str
     session_id: str = ""
+
+
+def _sanitize_manual_history(turns: list[ChatHistoryTurn]) -> list[dict[str, str]]:
+    """Keep last N user/assistant turns for chat context (bounded size)."""
+    max_n = RAG_CHAT_HISTORY_MAX if RAG_CHAT_HISTORY_MAX > 0 else 12
+    per_msg = 4000
+    out: list[dict[str, str]] = []
+    for t in turns:
+        role = str(t.role or "").strip().lower()
+        content = str(t.content or "").strip()
+        if role not in ("user", "assistant") or not content:
+            continue
+        out.append({"role": role, "content": content[:per_msg]})
+    return out[-max_n:]
+
+
+def _retrieval_query_from_history(history: list[dict[str, str]], q: str) -> str:
+    """Blend recent turns into the embedding query so vague follow-ups stay on-topic."""
+    if not history:
+        return q
+    tail = history[-6:]
+    parts = [h["content"][:700] for h in tail]
+    parts.append(q)
+    return " \n".join(parts)[:3000]
+
+
+def _lexical_query_from_history(history: list[dict[str, str]], q: str) -> str:
+    """Keyword search: current question plus last user line (reduces noise vs full assistant text)."""
+    if not history:
+        return q
+    last_user = ""
+    for h in reversed(history):
+        if h["role"] == "user":
+            last_user = (h.get("content") or "").strip()[:500]
+            break
+    if not last_user:
+        return q
+    return f"{last_user}\n{q}"[:2000]
 
 
 def create_app() -> FastAPI:
@@ -918,21 +971,25 @@ def create_app() -> FastAPI:
         if not q:
             raise HTTPException(400, "message is empty")
 
+        hist = _sanitize_manual_history(body.history)
+        q_embed = _retrieval_query_from_history(hist, q)
+        q_lex = _lexical_query_from_history(hist, q)
+
         async with _store_lock:
             if not store.chunks or store.embeddings is None:
                 raise HTTPException(400, "No manual loaded. Upload a PDF first.")
 
             try:
                 async with aiohttp.ClientSession() as session:
-                    q_std = _embedding_query_boost(q)
-                    q_ocr = _embedding_query_boost(_mirror_ocr_for_embed(q))
+                    q_std = _embedding_query_boost(q_embed)
+                    q_ocr = _embedding_query_boost(_mirror_ocr_for_embed(q_embed))
                     emb_std = await ollama_embed(session, q_std, EMBED_MODEL)
                     emb_ocr = await ollama_embed(session, q_ocr, EMBED_MODEL)
                     vk = max(VECTOR_K, TOP_K + 2)
                     v_std = store.search(emb_std, top_k=vk)
                     v_ocr = store.search(emb_ocr, top_k=vk)
                     vector_hits = _merge_dual_vector_hits(v_std, v_ocr, limit=vk)
-                    lexical_hits = _keyword_hits(store.chunks, q, top_k=LEXICAL_K)
+                    lexical_hits = _keyword_hits(store.chunks, q_lex, top_k=LEXICAL_K)
                     hits = _merge_hits(vector_hits, lexical_hits, top_k=max(TOP_K, 5))
             except Exception as e:
                 raise HTTPException(502, f"Retrieval failed: {e}") from e
@@ -945,10 +1002,10 @@ def create_app() -> FastAPI:
         user_content = (
             f"Manual excerpts:\n\n{context}\n\n---\n\n{bridge}User question: {q}"
         )
-        messages = [
-            {"role": "system", "content": RAG_SYSTEM},
-            {"role": "user", "content": user_content},
-        ]
+        messages: list[dict[str, str]] = [{"role": "system", "content": RAG_SYSTEM}]
+        for h in hist:
+            messages.append({"role": h["role"], "content": h["content"]})
+        messages.append({"role": "user", "content": user_content})
 
         chat_options = {
             "num_predict": MAX_TOKENS,

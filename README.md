@@ -22,8 +22,8 @@ Legacy voice-assistant files were removed from this project scope.
 Default Ollama models:
 
 - Embeddings: `nomic-embed-text`
-- Chat model: `qwen3.5:9b`
-- Optional fallback: `qwen2.5:7b-instruct`
+- Chat model: `qwen2.5:3b` (default; lighter on small GPUs)
+- Optional fallback: `qwen2.5:7b-instruct` or `qwen3.5:9b` for quality comparisons
 
 Configurable via:
 
@@ -136,7 +136,8 @@ Recommended Ollama pulls:
 
 ```bash
 ollama pull nomic-embed-text
-ollama pull qwen3.5:9b
+ollama pull qwen2.5:3b
+# optional: ollama pull qwen3.5:9b   # set OLLAMA_CHAT_MODEL if you want the larger model
 ```
 
 ---
