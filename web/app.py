@@ -11,6 +11,18 @@ Env:
   RAG_TOP_K            default 5
   RAG_MAX_TOKENS       manual chat output budget (default 480; two-part answers need more room)
   RAG_CHAT_HISTORY_MAX max prior user/assistant turns sent with /api/chat (default 12)
+  COMMUNITY_ENABLED       1|0 — user tips in Chroma (default 1)
+  COMMUNITY_CHROMA_PATH   persist dir (default data/community_chroma)
+  COMMUNITY_QUERY_TOP_K   neighbors to scan (default 8)
+  COMMUNITY_MAX_DISTANCE  cosine distance max; lower stricter (default 0.28)
+  COMMUNITY_LEXICAL_FILTER 1|0 — require on-topic overlap with saved tip question (default 1)
+  COMMUNITY_INJECT_MAX    max tips injected into prompt (default 2)
+  WHISPER_STT             1|0 — POST /api/transcribe (default 1 if faster-whisper or openai-whisper installed)
+  WHISPER_MODEL           tiny|base|small|medium|large-v3 … (default small)
+  WHISPER_DEVICE          auto|cpu|cuda (faster-whisper / openai device pick)
+  WHISPER_COMPUTE_TYPE    faster-whisper only, e.g. int8, float16 (default int8 on CPU, float16 on CUDA)
+  WHISPER_MAX_UPLOAD_MB   max audio upload size (default 25)
+  WHISPER_VAD_FILTER      1|0 — faster-whisper VAD (default 0; VAD often strips browser WebM)
   RAG_RECIPE_NORMALIZE       0|1 — if 1, normalize recipe-like pages via Ollama before chunking/embed
   RAG_RECIPE_NORMALIZE_MODE  auto|all — auto skips index pages and non-recipe text
   RAG_RECIPE_MODEL           optional; defaults to OLLAMA_CHAT_MODEL
@@ -28,6 +40,11 @@ Env:
   RECIPE_CHAT_MAX_TOKENS            LLM budget for /api/recipe-chat (default 600)
   RECIPE_QUERY_SPELLCHECK           1 to enable TextBlob correction (optional: pip install textblob)
   RECIPE_PROGRESS_MATCH             fuzzy threshold 0–1 for /api/recipe-progress (default 0.58)
+
+  Manual /api/chat retrieval:
+  RAG_TITLE_PAGE_BOOST     1|0 — if recipe title matches query, pull chunks from that page (default 1)
+  RAG_TITLE_MATCH_MIN      fuzzy title score 0–1 to trigger page boost (default 0.78)
+  RAG_TITLE_PAGE_MAX_CHUNKS max chunks per matched page to merge in (default 3)
 """
 from __future__ import annotations
 
@@ -35,13 +52,14 @@ import asyncio
 import json
 import os
 import re
+import tempfile
 import time
 from collections import OrderedDict
 from pathlib import Path
 
 import aiohttp
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -102,6 +120,127 @@ RAG_DOCS_FILE = os.environ.get("RAG_DOCS_FILE", "").strip()
 RAG_AUTO_DOCS = os.environ.get("RAG_AUTO_DOCS", "1").strip() not in {"0", "false", "False"}
 LEXICAL_K = int(os.environ.get("RAG_LEXICAL_K", "18"))
 VECTOR_K = int(os.environ.get("RAG_VECTOR_K", "12"))
+RAG_TITLE_PAGE_BOOST = os.environ.get("RAG_TITLE_PAGE_BOOST", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+}
+RAG_TITLE_MATCH_MIN = float(os.environ.get("RAG_TITLE_MATCH_MIN", "0.78"))
+RAG_TITLE_PAGE_MAX_CHUNKS = max(1, min(8, int(os.environ.get("RAG_TITLE_PAGE_MAX_CHUNKS", "3"))))
+
+COMMUNITY_ENABLED = os.environ.get("COMMUNITY_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+COMMUNITY_CHROMA_DIR = Path(
+    os.environ.get("COMMUNITY_CHROMA_PATH", str(DATA_DIR / "community_chroma"))
+).resolve()
+COMMUNITY_QUERY_TOP_K = max(1, int(os.environ.get("COMMUNITY_QUERY_TOP_K", "8")))
+COMMUNITY_MAX_DISTANCE = float(os.environ.get("COMMUNITY_MAX_DISTANCE", "0.28"))
+COMMUNITY_LEXICAL_FILTER = os.environ.get("COMMUNITY_LEXICAL_FILTER", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+}
+COMMUNITY_INJECT_MAX = max(0, int(os.environ.get("COMMUNITY_INJECT_MAX", "2")))
+COMMUNITY_SAVE_QUESTION_MAX = 8000
+COMMUNITY_SAVE_COMMENT_MAX = 4000
+COMMUNITY_SAVE_AUTHOR_MAX = 120
+COMMUNITY_SAVE_ANSWER_MAX = 4000
+
+_COMMUNITY_WORD_RE = re.compile(r"[a-zA-ZÀ-ÖØ-öø-ÿ]{3,}", re.UNICODE)
+_COMMUNITY_STOPWORDS = frozenset(
+    """
+    the and for are but not you all can her was one our out day get has him his how its may new now
+    old see two way who boy did let put say she too use that this with have from they been than into
+    your will just like some what when tell best long each also any both few more most other such than
+    them then these those very want make need help tips easy easiest step steps recipe using use used
+    just only also into about after again against before being below between both under over while
+    una uno per con che non sono alla nel gli dei delle come fare questo questa molto più anche solo
+    """.split()
+)
+
+
+def _community_significant_tokens(text: str) -> set[str]:
+    raw = {m.group(0).lower() for m in _COMMUNITY_WORD_RE.finditer(text or "")}
+    return {t for t in raw if t not in _COMMUNITY_STOPWORDS}
+
+
+def _community_one_line(s: str, max_len: int) -> str:
+    t = " ".join((s or "").split())
+    if len(t) <= max_len:
+        return t
+    return t[: max_len - 1] + "…"
+
+
+def _community_passes_lexical_gate(user_q: str, match: dict) -> bool:
+    """Legacy full-doc overlap (used only when the query has no topic tokens after generic strip)."""
+    q_toks = _community_significant_tokens(user_q)
+    if not q_toks:
+        return True
+    doc = f"{match.get('question') or ''} {match.get('answer_excerpt') or ''} {match.get('comment') or ''}"
+    d_toks = _community_significant_tokens(doc)
+    inter = q_toks & d_toks
+    if not inter:
+        return False
+    longest = max(len(t) for t in inter)
+    nq = len(q_toks)
+    if nq <= 1:
+        return True
+    if nq == 2:
+        return len(inter) >= 2 or longest >= 4
+    return len(inter) >= 2 or longest >= 6
+
+
+# Stripped before topic matching so unrelated tips (e.g. brown stock vs fried chicken) do not match on generic cooking words.
+_COMMUNITY_TOPIC_GENERIC = frozenset(
+    """
+    water broth salt pepper heat time recipe dish next then what when have has had make made like some your
+    this that with from into about after before onion carrot celery garlic butter oil pan pot saucepan simmer
+    boil boiled boiling add cup cups tablespoon teaspoons teaspoon minute minutes hour hours step steps deglaze
+    deglazing simmering meat veal beef pork lamb sauce stock slice slices piece
+    """.split()
+)
+
+
+def _community_topic_tokens(text: str) -> set[str]:
+    return _community_significant_tokens(text) - _COMMUNITY_TOPIC_GENERIC
+
+
+def _community_match_on_topic(user_q: str, match: dict) -> bool:
+    """
+    Require overlap between the *current* question and the tip's saved question (or comment),
+    after removing generic cooking words. Stops unrelated tips from appearing via embedding-only similarity.
+    """
+    qt = _community_topic_tokens(user_q)
+    if not qt:
+        return _community_passes_lexical_gate(user_q, match)
+    qs = _community_topic_tokens(match.get("question") or "")
+    qc = _community_topic_tokens(match.get("comment") or "")
+    inter_s = qt & qs
+    inter_c = qt & qc
+    if inter_s or inter_c:
+        strong = {t for t in (inter_s | inter_c) if len(t) >= 5}
+        if strong:
+            return True
+        if len(inter_s) >= 2 or len(inter_c) >= 2:
+            return True
+        for t in (inter_s | inter_c):
+            if len(t) >= 4:
+                return True
+    return False
+
+
+def _community_filter_matches(user_q: str, matches: list[dict]) -> list[dict]:
+    """Keep tips that are on-topic vs the current question (not just vector-near in 'cooking' space)."""
+    if not matches:
+        return []
+    if not COMMUNITY_LEXICAL_FILTER:
+        return matches
+    return [m for m in matches if _community_match_on_topic(user_q, m)]
+
+WHISPER_STT_ENABLED = os.environ.get("WHISPER_STT", "1").strip().lower() not in {"0", "false", "no"}
+WHISPER_MAX_UPLOAD_BYTES = max(1, int(os.environ.get("WHISPER_MAX_UPLOAD_MB", "25"))) * 1024 * 1024
+_WHISPER_AUDIO_SUFFIXES = frozenset(
+    {".webm", ".wav", ".mp3", ".mpeg", ".mp4", ".m4a", ".ogg", ".opus", ".flac"}
+)
 
 RAG_RECIPE_NORMALIZE = os.environ.get("RAG_RECIPE_NORMALIZE", "0").strip().lower() in {
     "1",
@@ -138,16 +277,22 @@ RECIPE_SYSTEM = (
 
 RAG_SYSTEM = """You are a manual assistant for a cookbook-style PDF. You will receive prior conversation (if any), then manual excerpts, then the user's latest question.
 
-Always answer in TWO clearly labeled parts:
+Answer in **exactly two** labeled parts (do not add a third part):
 
 1) **From the manual** — Only what is supported by the excerpts below. Quote or paraphrase faithfully (ingredients, steps, times, titles). If the excerpts do not contain a recipe or direct answer, say briefly that the manual does not cover it in these passages. Do NOT invent steps or ingredients here. Never cite or imply "the book says" anything that is not in the excerpts.
 
 2) **In my view (not from the manual)** — Short optional suggestions: modern substitutions, sides, safety tips, or variations using general cooking knowledge. This section MUST be clearly separate from part 1. You MUST NOT present this part as coming from the manual. If part 1 already fully answers a narrow factual question with no room for useful extras, you may use one line such as "No strong extras beyond the manual for this question."
 
+**Do not** write any "Community", "other users", or similar section. **Do not** invent tips attributed to people. The application adds verified community tips separately when they exist.
+
 Rules:
-- OCR/typos: treat near-matches as the same dish when meaning matches (e.g. English vs Italian titles).
+- OCR/typos: treat near-matches as the same dish when meaning matches (e.g. English vs Italian titles). The scan may use **souce** instead of **sauce** — treat as the same word.
 - If a "Retrieval note" explains spelling/title variants, treat that recipe as matching the user's question.
+- **Page numbers:** Only cite pages exactly as shown in the excerpt lines (e.g. `Excerpt 2 (page 29, ...)`). Never invent or guess a page (e.g. do not say "page 34" unless that page appears in an excerpt header you were given).
+- **Proteins:** If the user asks about **chicken** or **fried chicken** / **Pollo fritto**, describe steps only from excerpts that actually mention **chicken** (or that Italian title in the same block). Do **not** substitute **lamb**, **veal**, or **mutton** from another excerpt unless the user asked for that meat.
 - Use conversation history only for understanding references ("it", "that dish"); facts still come from excerpts in part 1.
+- If the user names a specific dish (e.g. Pavese soup), base part 1 on excerpts that name or clearly describe that dish; do not substitute a different recipe (e.g. another bread soup) unless the excerpts provided do not contain the named dish at all — then say the manual excerpts do not show it and answer briefly from what is shown.
+- Many recipes have **both** an English and an Italian title (e.g. BROWN STOCK and Sugo di Carne). Treat them as the same dish when the procedure matches; do not say the manual has no match if an excerpt clearly describes that stock/sauce.
 - Stay concise unless the user asks for detail."""
 
 store = VectorStore(STORE_DIR)
@@ -155,6 +300,131 @@ recipe_catalog = RecipeCatalog(RECIPE_STORE_DIR)
 _store_lock = asyncio.Lock()
 _recipe_embed_cache: OrderedDict[str, np.ndarray] = OrderedDict()
 _recipe_session_ctx: OrderedDict[str, dict] = OrderedDict()
+community_store = None
+
+
+def _init_community_store() -> None:
+    global community_store
+    community_store = None
+    if not COMMUNITY_ENABLED:
+        print("[community] disabled (COMMUNITY_ENABLED=0)")
+        return
+    try:
+        from web.rag.community_chroma import CommunitySolutionsStore
+
+        community_store = CommunitySolutionsStore(COMMUNITY_CHROMA_DIR)
+        n = community_store.count()
+        print(f"[community] Chroma ready at {COMMUNITY_CHROMA_DIR} ({n} saved tip(s))")
+    except Exception as e:
+        print(f"[community] unavailable: {e}")
+
+
+def _relative_saved_phrase(ts: int) -> str:
+    if ts <= 0:
+        return "previously"
+    now = int(time.time())
+    d = max(0, (now - ts) // 86400)
+    if d <= 0:
+        return "earlier today"
+    if d == 1:
+        return "1 day ago"
+    if d < 14:
+        return f"{d} days ago"
+    if d < 60:
+        return f"{d // 7} weeks ago"
+    if d < 365:
+        return f"{max(1, d // 30)} months ago"
+    return f"{d // 365} year(s) ago"
+
+
+def _strip_model_community_section(text: str) -> str:
+    """Remove any model-written part 3; community is appended only from the database."""
+    t = text or ""
+    patterns = (
+        r"(?is)\n+\s*3\)\s*\*\*Community\b.*",
+        r"(?is)\n+\s*\*\*3\)\s*Community\b.*",
+        r"(?is)\n+\s*###\s*3\.\s*Community\b.*",
+    )
+    for pat in patterns:
+        t2 = re.sub(pat, "", t, count=1)
+        if t2 != t:
+            return t2.rstrip()
+    return t.rstrip()
+
+
+def _format_community_answer_append(matches: list[dict]) -> str:
+    """Deterministic part 3 from Chroma only (no LLM)."""
+    if not matches:
+        return ""
+    lines = [
+        "",
+        "3) **Community (other users, not verified)**",
+        "",
+    ]
+    for m in matches:
+        age = _relative_saved_phrase(int(m.get("saved_ts") or 0))
+        auth = str(m.get("author") or "").strip() or "Someone"
+        comm = (m.get("comment") or "").strip()
+        qprev = _community_one_line(m.get("question") or "", 280)
+        ansnap = _community_one_line(m.get("answer_excerpt") or "", 520)
+        lines.append(f"- **{auth}** ({age})")
+        if qprev:
+            lines.append(f"  - They had asked: {qprev}")
+        if ansnap:
+            lines.append(f"  - Assistant reply (snapshot when saved): {ansnap}")
+        lines.append(f"  - Tip: {comm if comm else '(no comment text)'}")
+    return "\n".join(lines)
+
+
+def _community_matches_api(matches: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    for m in matches:
+        ts = int(m.get("saved_ts") or 0)
+        qpv = (m.get("question") or "")[:280]
+        apv = (m.get("answer_excerpt") or "")[:360]
+        tip = _community_one_line(m.get("comment") or "", 200)
+        tip_line = f"Tip: {tip}" if tip else ""
+        title = f"Q: {qpv}" + (f"\n\nA: {apv}" if apv else "") + (f"\n\n{tip_line}" if tip_line else "")
+        out.append(
+            {
+                "author": m.get("author"),
+                "age_phrase": _relative_saved_phrase(ts),
+                "saved_ts": ts,
+                "question_preview": (m.get("question") or "")[:240],
+                "answer_preview": (m.get("answer_excerpt") or "")[:320],
+                "tip_preview": (m.get("comment") or "")[:200],
+                "chip_title": title[:900],
+                "distance": round(float(m.get("distance", 0.0)), 4),
+            }
+        )
+    return out
+
+
+async def _community_lookup_matches(emb_std: np.ndarray) -> list[dict]:
+    if community_store is None or COMMUNITY_INJECT_MAX <= 0:
+        return []
+    try:
+        return await asyncio.to_thread(
+            community_store.query_similar,
+            emb_std,
+            **{
+                "n_results": COMMUNITY_QUERY_TOP_K,
+                "max_distance": COMMUNITY_MAX_DISTANCE,
+                "inject_max": COMMUNITY_INJECT_MAX,
+            },
+        )
+    except Exception as e:
+        print(f"[community] query failed: {e}")
+        return []
+
+
+def _whisper_lib_available() -> bool:
+    try:
+        from web.rag import whisper_transcribe as wt
+
+        return wt.detect_backend() is not None
+    except Exception:
+        return False
 
 
 def _recipe_query_embedding_ok(qvec: np.ndarray) -> tuple[bool, str]:
@@ -492,6 +762,49 @@ def _embedding_query_boost(q: str) -> str:
         )
     if "salsa" in ql:
         extras.append("sauce recipe")
+    if "pavese" in ql:
+        extras.extend(
+            [
+                "Zuppa alla Pavese",
+                "PAVESE SOUP",
+                "pavese soup",
+                "toasted bread butter poached eggs broth parmesan",
+            ]
+        )
+    if ("brown" in ql and "stock" in ql) or "brownstock" in ql.replace(" ", ""):
+        extras.extend(
+            [
+                "BROWN STOCK",
+                "Sugo di Carne",
+                "beef stock bones onion carrot celery simmer strain",
+            ]
+        )
+    if "sugo" in ql and "carne" in ql:
+        extras.extend(
+            [
+                "BROWN STOCK",
+                "Sugo di Carne",
+                "brown stock meat broth",
+            ]
+        )
+    if ("fried" in ql and "chicken" in ql) or ("pollo" in ql and "fritto" in ql):
+        extras.extend(
+            [
+                "FRIED CHICKEN",
+                "Pollo fritto",
+                "POLLO FRITTO",
+                "spring chicken flour egg bread crumbs oil",
+                "chicken fried in oil boil then fry",
+            ]
+        )
+    if "polenta" in ql:
+        extras.extend(
+            [
+                "POLENTA PIE",
+                "Polenta Pasticciata",
+                "polenta pasticciata cornmeal mush milk carrot onion celery bacon",
+            ]
+        )
     if not extras:
         return q
     return f"{q} {' '.join(extras)}".strip()
@@ -501,6 +814,8 @@ def _embedding_query_boost(q: str) -> str:
 _OCR_TERM_ALIASES: dict[str, tuple[str, ...]] = {
     "pomodoro": ("pomidoro",),
     "pomidoro": ("pomodoro",),
+    "sauce": ("souce",),
+    "souce": ("sauce",),
 }
 
 
@@ -518,8 +833,10 @@ def _expand_weighted_ocr_aliases(
 
 
 def _mirror_ocr_for_embed(q: str) -> str:
-    """Second embedding query: match text as the book scanned it (e.g. Pomidoro)."""
-    return re.sub(r"\bpomodoro\b", "pomidoro", q, flags=re.IGNORECASE)
+    """Second embedding query: match text as the book scanned it (e.g. Pomidoro, Polio)."""
+    q = re.sub(r"\bpomodoro\b", "pomidoro", q, flags=re.IGNORECASE)
+    q = re.sub(r"\bpollo\b", "polio", q, flags=re.IGNORECASE)
+    return q
 
 
 def _merge_dual_vector_hits(
@@ -555,6 +872,35 @@ def _llm_spelling_bridge(q: str, hits: list[tuple[dict, float]]) -> str:
         notes.append(
             "An English heading such as 'TOMATO SAUCE' may name the same recipe the user asked for in Italian."
         )
+    if "pavese" in ql and "pavese" in blob:
+        notes.append(
+            "The user asked about Pavese soup; excerpts that name 'Pavese' or 'Zuppa alla Pavese' are the primary source for that dish."
+        )
+    stock_ask = ("brown" in ql and "stock" in ql) or ("sugo" in ql and "carne" in ql)
+    stock_blob = ("brown" in blob and "stock" in blob) or (
+        "sugo" in blob and "carne" in blob
+    )
+    if stock_ask and stock_blob:
+        notes.append(
+            "In this manual, **BROWN STOCK** and **Sugo di Carne** are the same recipe (English and Italian titles). "
+            "If an excerpt describes browning meat with onion/carrot/celery, adding water, and long simmering/straining, "
+            "that is the user's recipe even when their words differ slightly from the heading."
+        )
+    if ("fried" in ql and "chicken" in ql) or ("pollo" in ql and "fritto" in ql):
+        if ("fried" in blob and "chicken" in blob) or ("pollo" in blob and "fritto" in blob) or (
+            "polio" in blob and "fritto" in blob
+        ):
+            notes.append(
+                "The manual may title this **FRIED CHICKEN** or **Pollo fritto** (OCR sometimes reads 'Polio fritto'); "
+                "those name the same dish as the user's question. Use only the excerpt that describes **chicken** — "
+                "do not mix in lamb, veal, or mutton from a different fried-meat recipe."
+            )
+    if "polenta" in ql and "polenta" in blob:
+        notes.append(
+            "The book often titles this **POLENTA PIE** with **(Polenta Pasticciata)**; vegetables and fillings "
+            "may appear in the same excerpt (e.g. carrot, onion, celery, bacon, Bolognese). "
+            "The scan may spell **souce** instead of **sauce**."
+        )
     if not notes:
         return ""
     return "Retrieval note (trust this for matching titles):\n- " + "\n- ".join(notes) + "\n\n"
@@ -573,6 +919,68 @@ def _italian_english_dish_bonus(lo: str, q: str) -> float:
     if "tomato" in lo and "sauce" in lo:
         b += 10.0
     return b
+
+
+def _named_dish_token_bonus(lo: str, ql: str) -> float:
+    """Large bonus when a distinctive dish token in the query appears in the chunk (disambiguates generic words like 'bread')."""
+    bonus = 0.0
+    compact = _norm(lo)
+    if "pavese" in ql and "pavese" in lo:
+        bonus += 58.0
+    # Italian Cook Book: same recipe, English + Italian titles (often split across lines in OCR).
+    brown_stock_q = ("brown" in ql and "stock" in ql) or "brownstock" in ql.replace(" ", "")
+    sugo_carne_q = ("sugo" in ql and "carne" in ql) or "sugo di carne" in ql
+    if brown_stock_q:
+        if "brownstock" in compact or ("brown" in lo and "stock" in lo):
+            bonus += 64.0
+        if "sugo" in lo and "carne" in lo:
+            bonus += 52.0
+    if sugo_carne_q and not brown_stock_q:
+        if "sugo di carne" in lo or ("sugo" in lo and "carne" in lo):
+            bonus += 56.0
+        if "brown" in lo and "stock" in lo:
+            bonus += 50.0
+    if ("fried" in ql and "chicken" in ql) or ("pollo" in ql and "fritto" in ql):
+        if ("fried" in lo and "chicken" in lo) or "fried chicken" in lo:
+            bonus += 62.0
+        if "pollo" in lo and "fritto" in lo:
+            bonus += 62.0
+        if "polio" in lo and "fritto" in lo:
+            bonus += 58.0
+    if "polenta" in ql:
+        if "polenta" in lo:
+            bonus += 56.0
+        if "pasticciata" in ql or "pie" in ql:
+            if "pasticciata" in lo or "polenta pie" in lo or ("polenta" in lo and "pie" in lo):
+                bonus += 48.0
+    return bonus
+
+
+def _fried_chicken_chunk_score_adj(lo: str, ql: str) -> float:
+    """
+    Prefer excerpts that are actually chicken/pollo fritto; demote other 'fritto' meat recipes (e.g. lamb)
+    when the user asked for fried chicken.
+    """
+    ql = ql.lower()
+    if not (("fried" in ql and "chicken" in ql) or ("pollo" in ql and "fritto" in ql)):
+        return 0.0
+    lo = lo.lower()
+    adj = 0.0
+    if (
+        "chicken" in lo
+        or "spring chicken" in lo
+        or ("fried" in lo and "chicken" in lo)
+        or ("pollo" in lo and "fritto" in lo)
+        or ("polio" in lo and "fritto" in lo)
+    ):
+        adj += 32.0
+    if "lamb" in lo and "chicken" not in lo and "pollo" not in lo and "spring" not in lo:
+        adj -= 52.0
+    if "veal" in lo and "chicken" not in lo and "pollo" not in lo:
+        adj -= 44.0
+    if "mutton" in lo and "chicken" not in lo and "pollo" not in lo:
+        adj -= 40.0
+    return adj
 
 
 # Generic query words that match too many chunks (preface, index, etc.)
@@ -708,6 +1116,8 @@ def _keyword_hits(chunks: list[dict], q: str, top_k: int) -> list[tuple[dict, fl
                 term_score += lo.count(tv) + 0.85 * compact.count(_norm(tv))
             score += w * term_score
         score += _italian_english_dish_bonus(lo, q)
+        score += _named_dish_token_bonus(lo, q.lower())
+        score += _fried_chicken_chunk_score_adj(lo, q.lower())
         score += _recipe_step_bonus(txt)
         score *= _catalog_penalty(txt)
         if score > 0:
@@ -720,8 +1130,11 @@ def _merge_hits(
     vector_hits: list[tuple[dict, float]],
     lexical_hits: list[tuple[dict, float]],
     top_k: int,
+    *,
+    query: str = "",
 ) -> list[tuple[dict, float]]:
     merged: dict[str, tuple[dict, float]] = {}
+    ql = (query or "").lower()
 
     def key_for(ch: dict) -> str:
         return f"{ch.get('page','?')}|{ch.get('text','')[:120]}"
@@ -729,14 +1142,21 @@ def _merge_hits(
     for rank, (ch, sc) in enumerate(vector_hits):
         cat = _catalog_penalty(ch.get("text", ""))
         step = _recipe_step_bonus(ch.get("text", ""))
-        score = (sc * 2.0) * cat + step + max(0.0, 1.0 - rank * 0.08)
+        lo = (ch.get("text") or "").lower()
+        dish = (
+            _named_dish_token_bonus(lo, ql)
+            + _italian_english_dish_bonus(lo, query)
+            + _fried_chicken_chunk_score_adj(lo, ql)
+        )
+        score = (sc * 2.0) * cat + step + dish + max(0.0, 1.0 - rank * 0.08)
         k = key_for(ch)
         prev = merged.get(k)
         if prev is None or score > prev[1]:
             merged[k] = (ch, score)
 
     for rank, (ch, sc) in enumerate(lexical_hits):
-        score = (sc * 2.8) + max(0.0, 0.9 - rank * 0.05)
+        lo_lex = (ch.get("text") or "").lower()
+        score = (sc * 2.8) + _fried_chicken_chunk_score_adj(lo_lex, ql) + max(0.0, 0.9 - rank * 0.05)
         k = key_for(ch)
         prev = merged.get(k)
         if prev is None:
@@ -748,6 +1168,61 @@ def _merge_hits(
     return ranked[:top_k]
 
 
+def _recipe_title_page_boost(
+    q: str,
+    hits: list[tuple[dict, float]],
+    top_k: int,
+) -> list[tuple[dict, float]]:
+    """
+    When the structured recipe index finds a strong title match, merge in chunks from that page.
+    Stops vector search from returning only a generic 'bread' recipe when the user named a specific dish.
+    """
+    if not RAG_TITLE_PAGE_BOOST or not recipe_catalog.recipes or not store.chunks:
+        return hits
+    qstr = (q or "").strip()
+    if len(qstr) < 5:
+        return hits
+    try:
+        ranked = recipe_catalog.fast_title_search(qstr, top_k=2, min_score=RAG_TITLE_MATCH_MIN)
+    except Exception:
+        return hits
+    if not ranked:
+        return hits
+    r, title_sc, _ = ranked[0]
+    page = r.get("page")
+    if page is None:
+        return hits
+    ql = qstr.lower()
+    rare = [w for w in re.findall(r"[a-zà-öø-ÿ]{4,}", ql) if w not in _STOP]
+    if "pavese" in ql and "pavese" not in rare:
+        rare.append("pavese")
+
+    def score_ch(ch: dict) -> float:
+        t = (ch.get("text") or "").lower()
+        return float(sum(t.count(w) for w in rare))
+
+    same_page = [ch for ch in store.chunks if ch.get("page") == page]
+    if not same_page:
+        return hits
+    same_page.sort(key=score_ch, reverse=True)
+    inject = same_page[:RAG_TITLE_PAGE_MAX_CHUNKS]
+
+    def kf(ch: dict) -> str:
+        return f"{ch.get('page', '?')}|{ch.get('text', '')[:140]}"
+
+    merged: dict[str, tuple[dict, float]] = {kf(h[0]): h for h in hits}
+    inj = 14.0 + float(title_sc) * 30.0
+    for ch in inject:
+        kk = kf(ch)
+        if kk not in merged:
+            merged[kk] = (ch, inj)
+        else:
+            c0, s0 = merged[kk]
+            merged[kk] = (c0, s0 + inj * 0.4)
+    out = sorted(merged.values(), key=lambda x: x[1], reverse=True)
+    return out[:top_k]
+
+
 class ChatHistoryTurn(BaseModel):
     role: str
     content: str
@@ -757,6 +1232,13 @@ class ChatBody(BaseModel):
     message: str
     session_id: str = ""
     history: list[ChatHistoryTurn] = Field(default_factory=list)
+
+
+class CommunitySaveBody(BaseModel):
+    question: str
+    comment: str
+    author: str = ""
+    answer_snapshot: str = ""
 
 
 class RecipeChatBody(BaseModel):
@@ -835,6 +1317,8 @@ def create_app() -> FastAPI:
         else:
             print("[RAG] No recipe catalog on disk — ingest a PDF to build it.")
 
+        _init_community_store()
+
         if not RAG_AUTO_DOCS:
             return
 
@@ -910,7 +1394,59 @@ def create_app() -> FastAPI:
                 "recipe_source": recipe_catalog.source_file,
                 "recipe_embed_dim": rec_dim,
                 "recipe_index_backend": "faiss" if FAISS_AVAILABLE else "numpy",
+                "community_enabled": bool(community_store is not None and COMMUNITY_ENABLED),
+                "community_tips": int(community_store.count()) if community_store else 0,
+                "whisper_stt_available": bool(WHISPER_STT_ENABLED and _whisper_lib_available()),
             }
+
+    @app.post("/api/transcribe")
+    async def transcribe_audio(
+        file: UploadFile = File(...),
+        language: str = Form(""),
+    ):
+        """Upload short audio; transcribe with local Whisper (faster-whisper or openai-whisper)."""
+        if not WHISPER_STT_ENABLED:
+            raise HTTPException(404, "Whisper STT is disabled (WHISPER_STT=0).")
+        from web.rag import whisper_transcribe as wt
+
+        if wt.detect_backend() is None:
+            raise HTTPException(
+                503,
+                "Whisper not installed. Run: pip install faster-whisper  (or: pip install openai-whisper)",
+            )
+        raw = await file.read()
+        if len(raw) > WHISPER_MAX_UPLOAD_BYTES:
+            mb = WHISPER_MAX_UPLOAD_BYTES // (1024 * 1024)
+            raise HTTPException(400, f"Audio too large (max {mb} MB).")
+        if len(raw) < 200:
+            raise HTTPException(400, "Audio file too small.")
+        suffix = Path(file.filename or "rec.webm").suffix.lower()
+        if suffix not in _WHISPER_AUDIO_SUFFIXES:
+            suffix = ".webm"
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(raw)
+                tmp_path = Path(tmp.name)
+            lang_in = (language or "").strip().lower()
+            if lang_in in ("en-us", "english"):
+                lang = "en"
+            elif lang_in in ("it-it", "italian", "italiano"):
+                lang = "it"
+            elif not lang_in:
+                lang = None
+            else:
+                lang = lang_in[:2]
+            text, backend = await asyncio.to_thread(wt.transcribe_file, tmp_path, lang)
+        except Exception as e:
+            raise HTTPException(502, f"Transcription failed: {e}") from e
+        finally:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        return {"text": text, "backend": backend}
 
     @app.post("/api/upload")
     async def upload(file: UploadFile = File(...)):
@@ -974,6 +1510,7 @@ def create_app() -> FastAPI:
         hist = _sanitize_manual_history(body.history)
         q_embed = _retrieval_query_from_history(hist, q)
         q_lex = _lexical_query_from_history(hist, q)
+        comm_matches: list[dict] = []
 
         async with _store_lock:
             if not store.chunks or store.embeddings is None:
@@ -984,13 +1521,22 @@ def create_app() -> FastAPI:
                     q_std = _embedding_query_boost(q_embed)
                     q_ocr = _embedding_query_boost(_mirror_ocr_for_embed(q_embed))
                     emb_std = await ollama_embed(session, q_std, EMBED_MODEL)
-                    emb_ocr = await ollama_embed(session, q_ocr, EMBED_MODEL)
+                    emb_ocr_coro = ollama_embed(session, q_ocr, EMBED_MODEL)
+                    comm_coro = _community_lookup_matches(emb_std)
+                    emb_ocr, comm_matches = await asyncio.gather(emb_ocr_coro, comm_coro)
+                    comm_matches = _community_filter_matches(q, comm_matches)
                     vk = max(VECTOR_K, TOP_K + 2)
                     v_std = store.search(emb_std, top_k=vk)
                     v_ocr = store.search(emb_ocr, top_k=vk)
                     vector_hits = _merge_dual_vector_hits(v_std, v_ocr, limit=vk)
                     lexical_hits = _keyword_hits(store.chunks, q_lex, top_k=LEXICAL_K)
-                    hits = _merge_hits(vector_hits, lexical_hits, top_k=max(TOP_K, 5))
+                    hits = _merge_hits(
+                        vector_hits,
+                        lexical_hits,
+                        top_k=max(TOP_K, 5),
+                        query=q,
+                    )
+                    hits = _recipe_title_page_boost(q, hits, top_k=max(TOP_K, 5))
             except Exception as e:
                 raise HTTPException(502, f"Retrieval failed: {e}") from e
 
@@ -999,9 +1545,10 @@ def create_app() -> FastAPI:
 
         context = _format_context(hits)
         bridge = _llm_spelling_bridge(q, hits)
-        user_content = (
-            f"Manual excerpts:\n\n{context}\n\n---\n\n{bridge}User question: {q}"
-        )
+        # Community tips are not shown to the LLM — appended after generation from DB only.
+        parts = [f"Manual excerpts:\n\n{context}"]
+        parts.append(f"---\n\n{bridge}User question: {q}")
+        user_content = "\n\n".join(parts)
         messages: list[dict[str, str]] = [{"role": "system", "content": RAG_SYSTEM}]
         for h in hist:
             messages.append({"role": h["role"], "content": h["content"]})
@@ -1050,6 +1597,10 @@ def create_app() -> FastAPI:
         if not answer:
             raise HTTPException(502, f"Ollama chat failed. Primary ({CHAT_MODEL}): {primary_err}")
 
+        answer = _strip_model_community_section(answer)
+        if comm_matches:
+            answer = answer.rstrip() + _format_community_answer_append(comm_matches)
+
         return {
             "answer": answer,
             "model_used": used_model,
@@ -1057,7 +1608,45 @@ def create_app() -> FastAPI:
                 {"page": h[0].get("page"), "score": round(h[1], 4)}
                 for h in hits
             ],
+            "community_matches": _community_matches_api(comm_matches),
         }
+
+    @app.post("/api/community-save")
+    async def community_save(body: CommunitySaveBody):
+        if community_store is None:
+            raise HTTPException(
+                503,
+                "Community tips are disabled or Chroma is unavailable. "
+                "Install chromadb (pip install chromadb) and set COMMUNITY_ENABLED=1.",
+            )
+        q = (body.question or "").strip()
+        c = (body.comment or "").strip()
+        if not c:
+            raise HTTPException(400, "comment is empty")
+        if len(q) > COMMUNITY_SAVE_QUESTION_MAX:
+            raise HTTPException(400, f"question too long (max {COMMUNITY_SAVE_QUESTION_MAX})")
+        if len(c) > COMMUNITY_SAVE_COMMENT_MAX:
+            raise HTTPException(400, f"comment too long (max {COMMUNITY_SAVE_COMMENT_MAX})")
+        author = (body.author or "").strip()[:COMMUNITY_SAVE_AUTHOR_MAX]
+        ans = (body.answer_snapshot or "").strip()[:COMMUNITY_SAVE_ANSWER_MAX]
+        try:
+            async with aiohttp.ClientSession() as session:
+                q_boost = _embedding_query_boost(q[:COMMUNITY_SAVE_QUESTION_MAX])
+                emb = await ollama_embed(session, q_boost, EMBED_MODEL)
+            rid = await asyncio.to_thread(
+                lambda: community_store.add_tip(
+                    question=q[:COMMUNITY_SAVE_QUESTION_MAX],
+                    embedding=emb,
+                    comment=c[:COMMUNITY_SAVE_COMMENT_MAX],
+                    author=author,
+                    answer_excerpt=ans,
+                )
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(502, f"Failed to save community tip: {e}") from e
+        return {"ok": True, "id": rid}
 
     @app.post("/api/recipes/rank")
     async def recipes_rank(body: RecipeRankBody):

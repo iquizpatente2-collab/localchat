@@ -11,6 +11,7 @@ __pycache__/
 # Local runtime / generated RAG index (rebuild after clone)
 data/rag_store/
 data/recipe_store/
+data/community_chroma/
 
 # Vosk / Piper voice assets (large; download separately)
 models/

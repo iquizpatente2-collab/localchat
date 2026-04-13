@@ -176,6 +176,98 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .community-chip {
+      border-color: #3d5a40;
+      background: #0f1a12;
+      color: #9bc49e;
+    }
+    .msg-community-slot {
+      margin-top: 0.35rem;
+      margin-left: 0.15rem;
+      width: 100%;
+      max-width: min(100%, 100ch);
+      box-sizing: border-box;
+    }
+    .community-save-toggle {
+      font-size: 0.76rem;
+      color: var(--accent);
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0.15rem 0;
+      text-decoration: underline;
+    }
+    .community-save-toggle:hover {
+      color: #6ab0ff;
+    }
+    .community-save-panel {
+      margin-top: 0.45rem;
+      padding: 0.55rem 0.65rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #0f1620;
+      display: none;
+      flex-direction: column;
+      gap: 0.45rem;
+    }
+    .community-save-panel.open {
+      display: flex;
+    }
+    .community-save-panel label {
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+    .community-save-panel input,
+    .community-save-panel textarea {
+      width: 100%;
+      box-sizing: border-box;
+      font-family: inherit;
+      font-size: 0.85rem;
+      padding: 0.4rem 0.5rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #121a26;
+      color: var(--text);
+    }
+    .community-save-panel textarea {
+      min-height: 2.65rem;
+      max-height: 10rem;
+      resize: vertical;
+      line-height: 1.35;
+    }
+    .community-voice-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      align-items: center;
+    }
+    .community-voice-row .btn-secondary {
+      font-size: 0.78rem;
+      padding: 0.28rem 0.5rem;
+    }
+    .community-save-status {
+      font-size: 0.76rem;
+      color: var(--muted);
+    }
+    .community-save-status.ok {
+      color: #5bd37a;
+    }
+    .community-save-status.err {
+      color: #f07178;
+    }
+    .community-save-context {
+      padding: 0.4rem 0.5rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0c1218;
+      font-size: 0.72rem;
+      line-height: 1.35;
+      color: var(--muted);
+    }
+    .community-save-context strong {
+      color: var(--text);
+      font-size: 0.76rem;
+    }
     .bubble-thinking {
       white-space: normal !important;
       display: flex;
@@ -684,6 +776,9 @@
       .control-row-primary #btnStt {
         grid-column: 2;
       }
+      .control-row-primary #btnWhisper {
+        grid-column: 1 / -1;
+      }
       .control-row-primary #sttLang {
         grid-column: 1 / -1;
       }
@@ -764,6 +859,9 @@
             <div class="control-row control-row-primary">
               <button type="button" id="btnAsk">Ask</button>
               <button type="button" id="btnStt" class="btn-secondary">Start voice</button>
+              <button type="button" id="btnWhisper" class="btn-secondary" title="Record audio; server transcribes with Whisper">
+                Whisper record
+              </button>
               <select id="sttLang" title="Speech recognition language">
                 <option value="en-US" selected>Voice: English</option>
                 <option value="it-IT">Voice: Italiano</option>
@@ -794,21 +892,100 @@
     /** Prior turns for /api/chat (user/assistant pairs); capped client-side. */
     const CHAT_HISTORY_MAX_MESSAGES = 12;
     let chatHistory = [];
+    let serverCommunityEnabled = false;
+    let serverWhisperAvailable = false;
     let stt = null;
     let sttActive = false;
     let sttTranscript = "";
     let sttStopRequested = false;
+    /** null = main chat (#q); community = tip textarea + panel status + optional voice button */
+    let sttContext = null;
+
+    let whisperStream = null;
+    let whisperRec = null;
+    let whisperChunks = [];
+    let whisperMimeType = "";
+    /** null = main chat; same shape as sttContext for community */
+    let whisperContext = null;
+
+    function pickWhisperMime() {
+      const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+      for (const m of candidates) {
+        try {
+          if (MediaRecorder.isTypeSupported(m)) return m;
+        } catch (_) {}
+      }
+      return "";
+    }
+
+    function setWhisperUi(recording) {
+      const mainB = $("btnWhisper");
+      const commB = whisperContext && whisperContext.whisperBtn;
+      const targets = commB ? [commB] : mainB ? [mainB] : [];
+      for (const b of targets) {
+        if (recording) {
+          b.textContent = "Stop & send";
+          b.classList.add("btn-recording");
+        } else {
+          b.textContent = commB ? "Whisper to tip" : "Whisper record";
+          b.classList.remove("btn-recording");
+        }
+      }
+      if (recording && commB && mainB) {
+        mainB.disabled = true;
+        mainB.title = "Finish community Whisper first";
+      } else if (!recording && mainB) {
+        applyWhisperBtnState();
+      }
+    }
+
+    function applyWhisperBtnState() {
+      const b = $("btnWhisper");
+      if (!b) return;
+      const mr = typeof MediaRecorder !== "undefined";
+      const can = serverWhisperAvailable && mr;
+      b.disabled = !can;
+      b.title = can
+        ? "Record audio; server transcribes with Whisper (Voice language: EN/IT)"
+        : serverWhisperAvailable
+          ? "MediaRecorder not available in this browser"
+          : "Server: install faster-whisper (or openai-whisper), or set WHISPER_STT=1";
+    }
 
     function setSttUi(active) {
-      const b = $("btnStt");
+      const mainB = $("btnStt");
+      const commBtn = sttContext && sttContext.voiceBtn;
       if (active) {
-        b.textContent = "Stop voice";
-        b.classList.add("btn-recording");
-        $("chatStatus").textContent = "Listening… click Stop voice to transcribe.";
-        $("chatStatus").className = "status";
+        if (commBtn) {
+          commBtn.textContent = "Stop voice";
+          commBtn.classList.add("btn-recording");
+          if (mainB) {
+            mainB.disabled = true;
+            mainB.title = "Finish community voice first";
+          }
+        } else if (mainB) {
+          mainB.textContent = "Stop voice";
+          mainB.classList.add("btn-recording");
+        }
+        if (sttContext && sttContext.type === "community" && sttContext.statusEl) {
+          sttContext.statusEl.textContent = `Listening (${stt.lang || ""})… click Stop voice.`;
+          sttContext.statusEl.className = "community-save-status";
+        } else {
+          $("chatStatus").textContent = `Listening (${stt.lang})… click Stop voice to transcribe.`;
+          $("chatStatus").className = "status";
+        }
       } else {
-        b.textContent = "Start voice";
-        b.classList.remove("btn-recording");
+        if (commBtn) {
+          commBtn.textContent = "Voice to tip";
+          commBtn.classList.remove("btn-recording");
+          if (mainB) {
+            mainB.disabled = false;
+            mainB.title = "";
+          }
+        } else if (mainB) {
+          mainB.textContent = "Start voice";
+          mainB.classList.remove("btn-recording");
+        }
       }
     }
 
@@ -838,11 +1015,14 @@
         '<span class="thinking-label">Thinking</span><span class="thinking-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>';
       const meta = document.createElement("div");
       meta.className = "msg-meta";
+      const communitySlot = document.createElement("div");
+      communitySlot.className = "msg-community-slot";
       row.appendChild(bubble);
       row.appendChild(meta);
+      row.appendChild(communitySlot);
       $("chatMessages").appendChild(row);
       scrollChatToBottom();
-      return { bubble, meta };
+      return { bubble, meta, communitySlot };
     }
 
     function fillSourceChips(metaEl, data) {
@@ -859,6 +1039,198 @@
         wrap.appendChild(chip);
       }
       if (wrap.children.length) metaEl.appendChild(wrap);
+      const cm = (data && data.community_matches) || [];
+      if (cm.length) {
+        const cw = document.createElement("div");
+        cw.className = "source-chips";
+        cw.style.marginTop = "0.35rem";
+        for (const m of cm.slice(0, 4)) {
+          const chip = document.createElement("span");
+          chip.className = "source-chip community-chip";
+          const who = m.author || "?";
+          chip.textContent = `${who} · ${m.age_phrase || ""}`;
+          chip.title = m.chip_title || m.question_preview || "";
+          cw.appendChild(chip);
+        }
+        metaEl.appendChild(cw);
+      }
+    }
+
+    function setupCommunitySaveUI(slot, questionText, answerText) {
+      slot.innerHTML = "";
+      if (!serverCommunityEnabled) return;
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "community-save-toggle";
+      toggle.textContent = "Save a tip for others (community)";
+      const panel = document.createElement("div");
+      panel.className = "community-save-panel";
+      panel.setAttribute("aria-hidden", "true");
+      const st = document.createElement("div");
+      st.className = "community-save-status";
+      const authorInp = document.createElement("input");
+      authorInp.type = "text";
+      authorInp.placeholder = "Your name (optional)";
+      authorInp.maxLength = 120;
+      const commentTa = document.createElement("textarea");
+      commentTa.placeholder = "How you solved it or what worked for you (required)";
+      commentTa.maxLength = 4000;
+      commentTa.rows = 2;
+      const saveBtn = document.createElement("button");
+      saveBtn.type = "button";
+      saveBtn.className = "btn-secondary";
+      saveBtn.textContent = "Save tip";
+      toggle.addEventListener("click", () => {
+        const open = !panel.classList.contains("open");
+        panel.classList.toggle("open", open);
+        panel.setAttribute("aria-hidden", open ? "false" : "true");
+        if (open) commentTa.focus();
+      });
+      saveBtn.addEventListener("click", async () => {
+        const comment = commentTa.value.trim();
+        if (!comment) {
+          st.textContent = "Please enter a tip in the text box.";
+          st.className = "community-save-status err";
+          return;
+        }
+        saveBtn.disabled = true;
+        st.textContent = "Saving…";
+        st.className = "community-save-status";
+        try {
+          const r = await fetch("/api/community-save", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              question: questionText,
+              comment,
+              author: authorInp.value.trim(),
+              answer_snapshot: (answerText || "").slice(0, 4000),
+            }),
+          });
+          const raw = await r.text();
+          let j = {};
+          try {
+            j = raw ? JSON.parse(raw) : {};
+          } catch (_) {}
+          if (!r.ok) {
+            const detail =
+              j.detail !== undefined
+                ? typeof j.detail === "string"
+                  ? j.detail
+                  : JSON.stringify(j.detail)
+                : raw || r.statusText;
+            throw new Error(detail);
+          }
+          st.textContent = "Saved — others may see this on similar questions.";
+          st.className = "community-save-status ok";
+          panel.classList.remove("open");
+          commentTa.value = "";
+        } catch (e) {
+          st.textContent = String(e.message || e);
+          st.className = "community-save-status err";
+        }
+        saveBtn.disabled = false;
+      });
+      const lblA = document.createElement("label");
+      lblA.textContent = "Name";
+      const lblC = document.createElement("label");
+      lblC.textContent = "Your tip";
+      const ctxSummary = document.createElement("div");
+      ctxSummary.className = "community-save-context";
+      const ctxHead = document.createElement("strong");
+      ctxHead.textContent = "Saved together with your comment";
+      const ctxBody = document.createElement("div");
+      ctxBody.style.marginTop = "0.3rem";
+      const qShow = (questionText || "").trim();
+      const aShow = (answerText || "").trim();
+      const qLine = document.createElement("div");
+      qLine.appendChild(document.createTextNode("Question: "));
+      const qSpan = document.createElement("span");
+      qSpan.textContent = qShow.length > 360 ? qShow.slice(0, 357) + "…" : qShow || "(empty)";
+      qLine.appendChild(qSpan);
+      const aLine = document.createElement("div");
+      aLine.style.marginTop = "0.2rem";
+      aLine.appendChild(document.createTextNode("Assistant reply (snapshot): "));
+      const aSpan = document.createElement("span");
+      aSpan.textContent = aShow.length > 480 ? aShow.slice(0, 477) + "…" : aShow || "(none)";
+      aLine.appendChild(aSpan);
+      ctxSummary.appendChild(ctxHead);
+      ctxBody.appendChild(qLine);
+      ctxBody.appendChild(aLine);
+      ctxSummary.appendChild(ctxBody);
+      const voiceHint = document.createElement("p");
+      voiceHint.style.cssText = "font-size:0.72rem;color:var(--muted);margin:0;";
+      voiceHint.textContent =
+        "Fill the tip by typing or use browser voice / Whisper (same EN/IT language as the bar above).";
+      const voiceRow = document.createElement("div");
+      voiceRow.className = "community-voice-row";
+      const btnCommStt = document.createElement("button");
+      btnCommStt.type = "button";
+      btnCommStt.className = "btn-secondary btn-community-stt";
+      btnCommStt.textContent = "Voice to tip";
+      btnCommStt.disabled = !SpeechRecognition;
+      btnCommStt.title = "Browser speech-to-text into the tip box";
+      const btnCommWhisper = document.createElement("button");
+      btnCommWhisper.type = "button";
+      btnCommWhisper.className = "btn-secondary btn-community-whisper";
+      btnCommWhisper.textContent = "Whisper to tip";
+      btnCommWhisper.disabled = !(serverWhisperAvailable && typeof MediaRecorder !== "undefined");
+      btnCommWhisper.title = "Record audio; server transcribes into the tip box";
+      btnCommStt.addEventListener("click", () => {
+        if (!stt) return;
+        if (!sttActive) {
+          sttContext = {
+            type: "community",
+            textarea: commentTa,
+            statusEl: st,
+            voiceBtn: btnCommStt,
+          };
+          stt.lang = $("sttLang").value || "en-US";
+          sttTranscript = "";
+          sttStopRequested = false;
+          sttActive = true;
+          document.querySelectorAll(".btn-community-stt").forEach((b) => {
+            b.disabled = b !== btnCommStt;
+          });
+          setSttUi(true);
+          try {
+            stt.start();
+          } catch (e) {
+            sttActive = false;
+            sttContext = null;
+            setSttUi(false);
+            setCommunitySttButtonsEnabled(true);
+            st.textContent = String(e.message || e);
+            st.className = "community-save-status err";
+          }
+        } else if (sttContext && sttContext.voiceBtn === btnCommStt) {
+          sttStopRequested = true;
+          sttActive = false;
+          stt.stop();
+        }
+      });
+      btnCommWhisper.addEventListener("click", () => {
+        if (typeof MediaRecorder === "undefined") return;
+        runWhisperRecording({
+          type: "community",
+          textarea: commentTa,
+          statusEl: st,
+          whisperBtn: btnCommWhisper,
+        });
+      });
+      voiceRow.appendChild(btnCommStt);
+      voiceRow.appendChild(btnCommWhisper);
+      panel.appendChild(lblA);
+      panel.appendChild(authorInp);
+      panel.appendChild(lblC);
+      panel.appendChild(ctxSummary);
+      panel.appendChild(voiceHint);
+      panel.appendChild(voiceRow);
+      panel.appendChild(commentTa);
+      panel.appendChild(saveBtn);
+      panel.appendChild(st);
+      slot.appendChild(toggle);
+      slot.appendChild(panel);
     }
 
     function initStt() {
@@ -883,27 +1255,64 @@
 
       stt.onerror = (event) => {
         sttActive = false;
+        const ctx = sttContext;
+        if (ctx && ctx.type === "community" && ctx.statusEl) {
+          ctx.statusEl.textContent = `Speech recognition error: ${event.error || "unknown"}`;
+          ctx.statusEl.className = "community-save-status err";
+        } else {
+          $("chatStatus").textContent = `Speech recognition error: ${event.error || "unknown"}`;
+          $("chatStatus").className = "status err";
+        }
         setSttUi(false);
-        $("chatStatus").textContent = `Speech recognition error: ${event.error || "unknown"}`;
-        $("chatStatus").className = "status err";
+        sttContext = null;
+        setCommunitySttButtonsEnabled(true);
       };
 
       stt.onend = () => {
         // Handle normal stop (user clicked Stop) and unexpected end.
         const shouldFinalize = sttActive || sttStopRequested;
+        const ctx = sttContext;
         sttActive = false;
         sttStopRequested = false;
         setSttUi(false);
+        sttContext = null;
+        setCommunitySttButtonsEnabled(true);
         if (!shouldFinalize) return;
         if (sttTranscript) {
-          $("q").value = sttTranscript;
-          $("chatStatus").textContent = "Voice transcribed to text.";
-          $("chatStatus").className = "status ok";
+          if (ctx && ctx.type === "community" && ctx.textarea) {
+            const cur = ctx.textarea.value.trimEnd();
+            ctx.textarea.value = cur ? `${cur} ${sttTranscript}` : sttTranscript;
+            if (ctx.statusEl) {
+              ctx.statusEl.textContent = "Voice added to tip — edit if needed, then Save tip.";
+              ctx.statusEl.className = "community-save-status ok";
+            }
+          } else {
+            $("q").value = sttTranscript;
+            $("chatStatus").textContent = "Voice transcribed to text.";
+            $("chatStatus").className = "status ok";
+          }
+        } else if (ctx && ctx.type === "community" && ctx.statusEl) {
+          ctx.statusEl.textContent = "No speech detected.";
+          ctx.statusEl.className = "community-save-status err";
         } else {
           $("chatStatus").textContent = "No speech detected.";
           $("chatStatus").className = "status err";
         }
       };
+    }
+
+    function setCommunitySttButtonsEnabled(on) {
+      document.querySelectorAll(".btn-community-stt").forEach((b) => {
+        b.disabled = !on || !SpeechRecognition;
+      });
+    }
+
+    function setCommunityWhisperButtonsEnabled(on) {
+      const mr = typeof MediaRecorder !== "undefined";
+      const can = on && serverWhisperAvailable && mr;
+      document.querySelectorAll(".btn-community-whisper").forEach((b) => {
+        b.disabled = !can;
+      });
     }
 
     async function refreshStatus() {
@@ -913,8 +1322,17 @@
         const rc = j.recipe_catalog_loaded
           ? ` · recipes ${j.recipe_count} (${j.recipe_index_backend || "?"})`
           : "";
+        serverCommunityEnabled = !!j.community_enabled;
+        serverWhisperAvailable = !!j.whisper_stt_available;
+        applyWhisperBtnState();
+        setCommunityWhisperButtonsEnabled(true);
+        setCommunitySttButtonsEnabled(true);
+        const ct = serverCommunityEnabled
+          ? ` · community tips ${j.community_tips != null ? j.community_tips : 0}`
+          : "";
+        const wz = serverWhisperAvailable ? " · whisper STT" : "";
         $("srvStatus").textContent = j.loaded
-          ? `Index ready: ${j.chunks} chunks from ${j.source_file || "unknown"} · embed ${j.embed_model} · chat ${j.chat_model}${rc}`
+          ? `Index ready: ${j.chunks} chunks from ${j.source_file || "unknown"} · embed ${j.embed_model} · chat ${j.chat_model}${rc}${ct}${wz}`
           : "No manual loaded yet — upload a PDF.";
         $("srvStatus").className = "status " + (j.loaded ? "ok" : "");
       } catch (e) {
@@ -1001,7 +1419,7 @@
       $("chatStatus").textContent = "Asking…";
       $("chatStatus").className = "status";
       appendUserBubble(message);
-      const { bubble, meta } = appendAssistantThinking();
+      const { bubble, meta, communitySlot } = appendAssistantThinking();
       try {
         const historyPayload = chatHistory.slice(-CHAT_HISTORY_MAX_MESSAGES);
         const r = await fetch("/api/chat", {
@@ -1034,6 +1452,7 @@
         bubble.classList.remove("bubble-err");
         bubble.textContent = j.answer;
         fillSourceChips(meta, j);
+        setupCommunitySaveUI(communitySlot, message, j.answer || "");
         chatHistory.push({ role: "user", content: message });
         chatHistory.push({ role: "assistant", content: j.answer || "" });
         if (chatHistory.length > CHAT_HISTORY_MAX_MESSAGES) {
@@ -1050,6 +1469,7 @@
         bubble.classList.add("bubble-err");
         bubble.textContent = String(e.message || e);
         meta.textContent = "";
+        if (communitySlot) communitySlot.innerHTML = "";
         $("chatStatus").textContent = "Error.";
         $("chatStatus").className = "status err";
       }
@@ -1070,10 +1490,12 @@
     $("btnStt").onclick = () => {
       if (!stt) return;
       if (!sttActive) {
+        sttContext = null;
         stt.lang = $("sttLang").value || "en-US";
         sttTranscript = "";
         sttStopRequested = false;
         sttActive = true;
+        setCommunitySttButtonsEnabled(false);
         setSttUi(true);
         $("chatStatus").textContent = `Listening (${stt.lang})… click Stop voice to transcribe.`;
         $("chatStatus").className = "status";
@@ -1081,7 +1503,9 @@
           stt.start();
         } catch (e) {
           sttActive = false;
+          sttContext = null;
           setSttUi(false);
+          setCommunitySttButtonsEnabled(true);
           $("chatStatus").textContent = String(e.message || e);
           $("chatStatus").className = "status err";
         }
@@ -1090,6 +1514,163 @@
         sttActive = false;
         stt.stop();
       }
+    };
+
+    async function runWhisperRecording(ctx) {
+      const isCommunity = ctx && ctx.type === "community";
+
+      if (whisperRec && whisperRec.state === "recording") {
+        try {
+          whisperRec.requestData();
+        } catch (_) {}
+        whisperRec.stop();
+        return;
+      }
+
+      whisperContext = isCommunity ? ctx : null;
+
+      try {
+        whisperMimeType = pickWhisperMime();
+        whisperChunks = [];
+        whisperStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const opts = whisperMimeType ? { mimeType: whisperMimeType } : undefined;
+        whisperRec = new MediaRecorder(whisperStream, opts);
+        whisperMimeType = whisperRec.mimeType || whisperMimeType || "audio/webm";
+
+        whisperRec.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) whisperChunks.push(e.data);
+        };
+
+        whisperRec.onstop = async () => {
+          const stopCtx = whisperContext;
+          try {
+            if (whisperStream) {
+              whisperStream.getTracks().forEach((t) => t.stop());
+              whisperStream = null;
+            }
+            setWhisperUi(false);
+            whisperContext = null;
+            setCommunityWhisperButtonsEnabled(true);
+            const blob = new Blob(whisperChunks, { type: whisperMimeType || "audio/webm" });
+            whisperChunks = [];
+            whisperRec = null;
+            const statusLine = (msg, cls) => {
+              if (stopCtx && stopCtx.type === "community" && stopCtx.statusEl) {
+                stopCtx.statusEl.textContent = msg;
+                stopCtx.statusEl.className =
+                  cls === "err" ? "community-save-status err" : cls === "ok" ? "community-save-status ok" : "community-save-status";
+              } else {
+                $("chatStatus").textContent = msg;
+                $("chatStatus").className = "status " + (cls || "");
+              }
+            };
+            if (blob.size < 200) {
+              statusLine("Recording too short.", "err");
+              return;
+            }
+            const fd = new FormData();
+            fd.append("file", blob, "recording.webm");
+            const langSel = ($("sttLang").value || "en-US").toLowerCase();
+            fd.append("language", langSel.startsWith("it") ? "it" : "en");
+            statusLine("Transcribing with Whisper…", "");
+            const r = await fetch("/api/transcribe", { method: "POST", body: fd });
+            const raw = await r.text();
+            let j = {};
+            try {
+              j = raw ? JSON.parse(raw) : {};
+            } catch (_) {}
+            if (!r.ok) {
+              const detail =
+                j.detail !== undefined
+                  ? typeof j.detail === "string"
+                    ? j.detail
+                    : JSON.stringify(j.detail)
+                  : raw || r.statusText;
+              throw new Error(detail);
+            }
+            const transcribed = String(j.text != null ? j.text : "").trim();
+            if (!transcribed) {
+              statusLine(
+                "Whisper returned no text (often: mic too quiet, very short clip, or wrong Voice language). Try again — or toggle EN/IT, speak longer, or use Voice to tip.",
+                "err",
+              );
+              return;
+            }
+            if (stopCtx && stopCtx.type === "community" && stopCtx.textarea) {
+              const cur = stopCtx.textarea.value.trimEnd();
+              stopCtx.textarea.value = cur ? `${cur} ${transcribed}` : transcribed;
+              stopCtx.textarea.focus();
+              statusLine(
+                j.backend
+                  ? `Transcribed (${j.backend}). Edit if needed, then Save tip.`
+                  : "Transcribed. Edit if needed, then Save tip.",
+                "ok",
+              );
+            } else {
+              const qEl = $("q");
+              if (qEl) {
+                qEl.value = transcribed;
+                qEl.focus();
+              }
+              $("chatStatus").textContent = j.backend
+                ? `Transcribed (${j.backend}). Edit text if needed, then Ask.`
+                : "Transcribed. Edit if needed, then Ask.";
+              $("chatStatus").className = "status ok";
+            }
+          } catch (e) {
+            setWhisperUi(false);
+            whisperContext = null;
+            setCommunityWhisperButtonsEnabled(true);
+            applyWhisperBtnState();
+            if (stopCtx && stopCtx.type === "community" && stopCtx.statusEl) {
+              stopCtx.statusEl.textContent = String(e.message || e);
+              stopCtx.statusEl.className = "community-save-status err";
+            } else {
+              $("chatStatus").textContent = String(e.message || e);
+              $("chatStatus").className = "status err";
+            }
+          }
+        };
+
+        whisperRec.start(250);
+        document.querySelectorAll(".btn-community-whisper").forEach((btn) => {
+          if (!isCommunity) btn.disabled = true;
+          else btn.disabled = btn !== ctx.whisperBtn;
+        });
+        if (!isCommunity) setCommunityWhisperButtonsEnabled(false);
+        setWhisperUi(true);
+        if (isCommunity && ctx.statusEl) {
+          ctx.statusEl.textContent = "Recording… click Stop & send when finished.";
+          ctx.statusEl.className = "community-save-status";
+        } else {
+          $("chatStatus").textContent = "Recording… click Stop & send when finished.";
+          $("chatStatus").className = "status";
+        }
+      } catch (e) {
+        setWhisperUi(false);
+        whisperContext = null;
+        setCommunityWhisperButtonsEnabled(true);
+        applyWhisperBtnState();
+        if (whisperStream) {
+          whisperStream.getTracks().forEach((t) => t.stop());
+          whisperStream = null;
+        }
+        whisperRec = null;
+        if (isCommunity && ctx.statusEl) {
+          ctx.statusEl.textContent = String(e.message || e);
+          ctx.statusEl.className = "community-save-status err";
+        } else {
+          $("chatStatus").textContent = String(e.message || e);
+          $("chatStatus").className = "status err";
+        }
+      }
+    }
+
+    $("btnWhisper").onclick = async () => {
+      const b = $("btnWhisper");
+      if (!b || b.disabled) return;
+      if (typeof MediaRecorder === "undefined") return;
+      await runWhisperRecording(null);
     };
 
     fetch("/api/health")
@@ -1102,6 +1683,7 @@
         $("srvStatus").textContent = "Health check failed.";
       });
     initStt();
+    applyWhisperBtnState();
 
     (function initComposerCollapse() {
       const coPan = document.getElementById("composerPanel");

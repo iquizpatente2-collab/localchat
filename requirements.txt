@@ -22,3 +22,6 @@ pypdf>=5.0.0
 rapidfuzz>=3.0.0
 # Recipe hybrid search; on some ARM boards use `pip install faiss-cpu` from conda-forge or rely on numpy fallback
 faiss-cpu>=1.8.0
+chromadb>=0.4.24
+# Local server STT (optional alternative to browser SpeechRecognition): pip install faster-whisper
+faster-whisper>=1.0.0

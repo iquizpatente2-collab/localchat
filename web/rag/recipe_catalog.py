@@ -102,6 +102,23 @@ def expand_query_for_embedding(query: str) -> str:
                 "chicken fried in oil",
             ]
         )
+    if "pavese" in words:
+        extra.extend(
+            [
+                "Zuppa alla Pavese",
+                "PAVESE SOUP",
+                "pavese soup",
+                "toasted bread poached eggs broth",
+            ]
+        )
+    if "brown" in words and "stock" in words:
+        extra.extend(["BROWN STOCK", "Sugo di Carne", "beef stock simmer strain"])
+    if "sugo" in words and "carne" in words:
+        extra.extend(["BROWN STOCK", "Sugo di Carne", "brown stock"])
+    if "polenta" in words:
+        extra.extend(
+            ["POLENTA PIE", "Polenta Pasticciata", "polenta pasticciata cornmeal mush"]
+        )
     if not extra:
         return query
     return f"{query} {' '.join(extra)}"
