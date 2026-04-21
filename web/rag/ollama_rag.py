@@ -10,6 +10,51 @@ def _ollama_base() -> str:
     return os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
 
 
+def _embed_cap_tokens(model: str) -> int:
+    """
+    Ollama enforces the *model's* tokenizer context (often 512); cl100k length is only an estimate.
+    If RAG_EMBED_INPUT_MAX_TOKENS is set, it wins. Otherwise pick a safe default from the model id.
+    """
+    raw = os.environ.get("RAG_EMBED_INPUT_MAX_TOKENS", "").strip()
+    if raw.isdigit():
+        return max(32, int(raw))
+    ml = (model or "").lower()
+    # Stay below published limits; server tokenizer can count higher than cl100k.
+    if "nomic-embed" in ml or ml.startswith("nomic") or "nomic_embed" in ml:
+        return 7000
+    if "qwen3-embedding" in ml or "qwen3_embedding" in ml:
+        return 7000
+    if "snowflake" in ml or "arctic-embed" in ml:
+        return 7000
+    # minilm, e5-small, many Ollama embedding ports — very small context
+    return 512
+
+
+def _truncate_for_embedding(text: str, model: str) -> str:
+    text = text or ""
+    if not text:
+        return text
+    max_tok = _embed_cap_tokens(model)
+    # Avoid huge encode() cost on pathological strings
+    pre_cap = min(len(text), max(12_000, max_tok * 12))
+    text = text[:pre_cap]
+    try:
+        import tiktoken
+
+        enc = tiktoken.get_encoding("cl100k_base")
+        ids = enc.encode(text)
+        if len(ids) > max_tok:
+            text = enc.decode(ids[:max_tok])
+    except Exception:
+        # ~4 chars/token heuristic when tiktoken missing or encode fails
+        text = text[: max(max_tok * 4, 512)]
+    # Final hard ceiling: some servers still stricter than cl100k estimate
+    char_ceiling = int(os.environ.get("RAG_EMBED_INPUT_MAX_CHARS", "0"))
+    if char_ceiling > 0:
+        text = text[:char_ceiling]
+    return text
+
+
 def _parse_embedding_vector(data: dict[str, Any]) -> np.ndarray | None:
     embs = data.get("embeddings")
     if isinstance(embs, list) and len(embs) > 0:
@@ -22,6 +67,7 @@ def _parse_embedding_vector(data: dict[str, Any]) -> np.ndarray | None:
 
 async def ollama_embed(session: aiohttp.ClientSession, text: str, model: str) -> np.ndarray:
     """Try modern /api/embed first, then legacy /api/embeddings."""
+    text = _truncate_for_embedding(text or "", model)
     base = _ollama_base()
     attempts: list[tuple[str, dict[str, Any]]] = [
         (f"{base}/api/embed", {"model": model, "input": text}),

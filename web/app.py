@@ -7,7 +7,15 @@ Run from repository root:
 Env:
   OLLAMA_HOST          default http://127.0.0.1:11434
   OLLAMA_EMBED_MODEL   default nomic-embed-text
-  OLLAMA_CHAT_MODEL    default qwen2.5:3b
+  RAG_EMBED_INPUT_MAX_TOKENS if set, overrides per-model defaults (ollama_rag picks ~7000 for nomic, 512 for unknown embed models).
+  RAG_EMBED_INPUT_MAX_CHARS if >0, extra hard character cap after token trim (optional).
+  RAG_PDF_PIPELINE         1|0 — use pdfplumber manual_pdf_pipeline for ingest (default 1). Set 0 for legacy pypdf chunking.
+  RAG_PIPELINE_MIN_WORDS   pipeline min chunk words (default 80)
+  RAG_PIPELINE_MAX_TOKENS  pipeline target max tokens per chunk (default 500)
+  RAG_PIPELINE_OVERLAP     pipeline text overlap in tokens (default 50)
+  RAG_PIPELINE_PAGE_START / RAG_PIPELINE_PAGE_END optional 1-based inclusive page window for testing
+  OLLAMA_CHAT_MODEL    default qwen2.5:14b-instruct
+  OLLAMA_CHAT_FALLBACK default qwen2.5:7b-instruct (used if primary chat fails)
   RAG_TOP_K            default 5
   RAG_MAX_TOKENS       manual chat output budget (default 480; two-part answers need more room)
   RAG_CHAT_HISTORY_MAX max prior user/assistant turns sent with /api/chat (default 12)
@@ -16,7 +24,10 @@ Env:
   COMMUNITY_QUERY_TOP_K   neighbors to scan (default 8)
   COMMUNITY_MAX_DISTANCE  cosine distance max; lower stricter (default 0.28)
   COMMUNITY_LEXICAL_FILTER 1|0 — require on-topic overlap with saved tip question (default 1)
-  COMMUNITY_INJECT_MAX    max tips injected into prompt (default 2)
+  COMMUNITY_INJECT_MAX    max tips from Chroma considered after distance filter (default 2); lexical filter still applies.
+  COMMUNITY_DISPLAY_MAX_DISTANCE  stricter Chroma distance cap to append/show a tip in the answer (default 0.20).
+  COMMUNITY_DISPLAY_MIN_FUZZ      rapidfuzz token_set_ratio min vs saved Q+comment for display (default 58).
+  COMMUNITY_DISPLAY_ULTRA_DISTANCE / COMMUNITY_DISPLAY_ULTRA_MIN_FUZZ  relax fuzz slightly when distance is very low (defaults 0.14 / 48).
   WHISPER_STT             1|0 — POST /api/transcribe (default 1 if faster-whisper or openai-whisper installed)
   WHISPER_MODEL           tiny|base|small|medium|large-v3 … (default small)
   WHISPER_DEVICE          auto|cpu|cuda (faster-whisper / openai device pick)
@@ -45,6 +56,16 @@ Env:
   RAG_TITLE_PAGE_BOOST     1|0 — if recipe title matches query, pull chunks from that page (default 1)
   RAG_TITLE_MATCH_MIN      fuzzy title score 0–1 to trigger page boost (default 0.78)
   RAG_TITLE_PAGE_MAX_CHUNKS max chunks per matched page to merge in (default 3)
+  RAG_RETRIEVAL_BLEND       always|never|smart — how to mix chat history into vector/lexical query (default smart).
+                            smart: if the new question is unlike the last exchange (embedding cosine), search as a fresh query.
+  RAG_TOPIC_CONTINUATION_SIM cosine threshold for “same thread” when smart (default 0.48; higher = stricter about reusing history)
+  RAG_TOPIC_CONTEXT_MAX_CHARS cap on prior user+assistant text used for that similarity check (default 2400)
+  RAG_FOLLOWUP_MAX_CHARS     max length for “short follow-up” detection; longer messages always use the similarity check (default 48)
+  RAG_MANUAL_ORGANIZE        1|0 — extra LLM pass to Markdown-layout retrieved excerpts in the reply (default 1)
+  RAG_MANUAL_ORGANIZE_MAX_CHARS / RAG_MANUAL_ORGANIZE_MAX_TOKENS / RAG_MANUAL_ORGANIZE_TIMEOUT_S
+  RAG_MANUAL_ORGANIZE_MODEL  optional; defaults to OLLAMA_CHAT_MODEL (e.g. set qwen2.5:3b for a faster layout pass)
+  RAG_MANUAL_MAX_PASSAGES     max passages sent to chat + shown under “Estratti” after focus ranking (default 3)
+  RAG_MANUAL_FOCUS_SCORE_GAP  if best passage beats 2nd by this focus score, show at most 2; if > ~2.2× gap, show 1
 """
 from __future__ import annotations
 
@@ -66,6 +87,7 @@ from pydantic import BaseModel, Field
 from rapidfuzz import fuzz
 
 from web.rag.ingest import extract_pages_cleaned, pages_to_chunks
+from web.rag.pipeline_bridge import enriched_pages_to_recipe_pages, pipeline_json_to_store_chunks
 from web.rag.ollama_rag import ollama_chat, ollama_embed, embed_many
 from web.rag.recipe_catalog import (
     FAISS_AVAILABLE,
@@ -110,16 +132,24 @@ STORE_DIR.mkdir(parents=True, exist_ok=True)
 RECIPE_STORE_DIR.mkdir(parents=True, exist_ok=True)
 
 EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
-CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "qwen2.5:3b")
-TOP_K = int(os.environ.get("RAG_TOP_K", "3"))
+CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "qwen2.5:14b-instruct")
+TOP_K = int(os.environ.get("RAG_TOP_K", "4"))
 MAX_TOKENS = int(os.environ.get("RAG_MAX_TOKENS", "480"))
 RAG_CHAT_HISTORY_MAX = max(0, int(os.environ.get("RAG_CHAT_HISTORY_MAX", "12")))
 CHAT_TIMEOUT_S = float(os.environ.get("RAG_CHAT_TIMEOUT_S", "240"))
 CHAT_FALLBACK_MODEL = os.environ.get("OLLAMA_CHAT_FALLBACK", "qwen2.5:7b-instruct")
 RAG_DOCS_FILE = os.environ.get("RAG_DOCS_FILE", "").strip()
 RAG_AUTO_DOCS = os.environ.get("RAG_AUTO_DOCS", "1").strip() not in {"0", "false", "False"}
-LEXICAL_K = int(os.environ.get("RAG_LEXICAL_K", "18"))
-VECTOR_K = int(os.environ.get("RAG_VECTOR_K", "12"))
+LEXICAL_K = int(os.environ.get("RAG_LEXICAL_K", "20"))
+VECTOR_K = int(os.environ.get("RAG_VECTOR_K", "14"))
+RAG_EXCERPT_MAX_CHARS = max(300, int(os.environ.get("RAG_EXCERPT_MAX_CHARS", "1200")))
+RAG_MANUAL_ORGANIZE = os.environ.get("RAG_MANUAL_ORGANIZE", "1").strip().lower() not in {"0", "false", "no"}
+RAG_MANUAL_ORGANIZE_MAX_CHARS = max(2000, int(os.environ.get("RAG_MANUAL_ORGANIZE_MAX_CHARS", "16000")))
+RAG_MANUAL_ORGANIZE_MAX_TOKENS = max(120, int(os.environ.get("RAG_MANUAL_ORGANIZE_MAX_TOKENS", "520")))
+RAG_MANUAL_ORGANIZE_TIMEOUT_S = float(os.environ.get("RAG_MANUAL_ORGANIZE_TIMEOUT_S", "90"))
+# After reranking: keep only the best-matching passages in chat + UI (reduces irrelevant OCR bulk).
+RAG_MANUAL_MAX_PASSAGES = max(1, min(12, int(os.environ.get("RAG_MANUAL_MAX_PASSAGES", "3"))))
+RAG_MANUAL_FOCUS_SCORE_GAP = float(os.environ.get("RAG_MANUAL_FOCUS_SCORE_GAP", "26"))
 RAG_TITLE_PAGE_BOOST = os.environ.get("RAG_TITLE_PAGE_BOOST", "1").strip().lower() not in {
     "0",
     "false",
@@ -127,6 +157,27 @@ RAG_TITLE_PAGE_BOOST = os.environ.get("RAG_TITLE_PAGE_BOOST", "1").strip().lower
 }
 RAG_TITLE_MATCH_MIN = float(os.environ.get("RAG_TITLE_MATCH_MIN", "0.78"))
 RAG_TITLE_PAGE_MAX_CHUNKS = max(1, min(8, int(os.environ.get("RAG_TITLE_PAGE_MAX_CHUNKS", "3"))))
+
+_rag_blend_raw = os.environ.get("RAG_RETRIEVAL_BLEND", "smart").strip().lower()
+RAG_RETRIEVAL_BLEND = _rag_blend_raw if _rag_blend_raw in {"always", "never", "smart"} else "smart"
+RAG_TOPIC_CONTINUATION_SIM = float(os.environ.get("RAG_TOPIC_CONTINUATION_SIM", "0.48"))
+RAG_TOPIC_CONTEXT_MAX_CHARS = max(400, int(os.environ.get("RAG_TOPIC_CONTEXT_MAX_CHARS", "2400")))
+RAG_FOLLOWUP_MAX_CHARS = max(12, int(os.environ.get("RAG_FOLLOWUP_MAX_CHARS", "48")))
+
+RAG_PDF_PIPELINE = os.environ.get("RAG_PDF_PIPELINE", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "legacy",
+    "pypdf",
+}
+RAG_PIPELINE_MIN_WORDS = max(20, int(os.environ.get("RAG_PIPELINE_MIN_WORDS", "80")))
+RAG_PIPELINE_MAX_TOKENS = max(100, int(os.environ.get("RAG_PIPELINE_MAX_TOKENS", "500")))
+RAG_PIPELINE_OVERLAP = max(0, int(os.environ.get("RAG_PIPELINE_OVERLAP", "50")))
+_rps = os.environ.get("RAG_PIPELINE_PAGE_START", "").strip()
+_rpe = os.environ.get("RAG_PIPELINE_PAGE_END", "").strip()
+RAG_PIPELINE_PAGE_START = int(_rps) if _rps.isdigit() else None
+RAG_PIPELINE_PAGE_END = int(_rpe) if _rpe.isdigit() else None
 
 COMMUNITY_ENABLED = os.environ.get("COMMUNITY_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
 COMMUNITY_CHROMA_DIR = Path(
@@ -140,10 +191,28 @@ COMMUNITY_LEXICAL_FILTER = os.environ.get("COMMUNITY_LEXICAL_FILTER", "1").strip
     "no",
 }
 COMMUNITY_INJECT_MAX = max(0, int(os.environ.get("COMMUNITY_INJECT_MAX", "2")))
+# Stricter than COMMUNITY_MAX_DISTANCE: only tips meeting this + fuzzy gate appear in the final Community section.
+COMMUNITY_DISPLAY_MAX_DISTANCE = float(os.environ.get("COMMUNITY_DISPLAY_MAX_DISTANCE", "0.20"))
+COMMUNITY_DISPLAY_MIN_FUZZ = max(30, min(100, int(os.environ.get("COMMUNITY_DISPLAY_MIN_FUZZ", "58"))))
+# If embedding is very strong, allow slightly lower fuzzy overlap (still on-topic via prior filter).
+COMMUNITY_DISPLAY_ULTRA_DISTANCE = float(os.environ.get("COMMUNITY_DISPLAY_ULTRA_DISTANCE", "0.14"))
+COMMUNITY_DISPLAY_ULTRA_MIN_FUZZ = max(30, min(100, int(os.environ.get("COMMUNITY_DISPLAY_ULTRA_MIN_FUZZ", "48"))))
 COMMUNITY_SAVE_QUESTION_MAX = 8000
 COMMUNITY_SAVE_COMMENT_MAX = 4000
 COMMUNITY_SAVE_AUTHOR_MAX = 120
 COMMUNITY_SAVE_ANSWER_MAX = 4000
+
+# Pipeline prepends this block to each chunk; strip for cleaner UI/LLM context (see manual_pdf_pipeline/enricher.py).
+_CHUNK_CTX_HEADER_RE = re.compile(
+    r"(?is)^Document:\s*[^\n]+\n"
+    r"Section:\s*[^\n]+\n"
+    r"Subsection:\s*[^\n]+\n"
+    r"Page:\s*[^\n]+\n"
+    r"Type:\s*[^\n]+\n"
+    r"Procedure ID:\s*[^\n]+\n"
+    r"Frequency:\s*[^\n]+\n"
+    r"-{2,}\s*\n+",
+)
 
 _COMMUNITY_WORD_RE = re.compile(r"[a-zA-ZÀ-ÖØ-öø-ÿ]{3,}", re.UNICODE)
 _COMMUNITY_STOPWORDS = frozenset(
@@ -236,6 +305,54 @@ def _community_filter_matches(user_q: str, matches: list[dict]) -> list[dict]:
         return matches
     return [m for m in matches if _community_match_on_topic(user_q, m)]
 
+
+def _community_confident_for_display(user_q: str, match: dict) -> bool:
+    """
+    Final UI / appendix: only tips that are both vector-close and lexically aligned with this question.
+    Chroma distance is cosine distance (lower = more similar).
+    """
+    dist = float(match.get("distance", 999.0))
+    if dist > COMMUNITY_DISPLAY_MAX_DISTANCE:
+        return False
+    q = (user_q or "").strip()
+    if len(q) < 4:
+        return False
+    blob = f"{match.get('question') or ''} {match.get('comment') or ''}".strip()
+    if not blob:
+        return False
+    score = fuzz.token_set_ratio(q.lower(), blob.lower())
+    if score >= COMMUNITY_DISPLAY_MIN_FUZZ:
+        return True
+    if dist <= COMMUNITY_DISPLAY_ULTRA_DISTANCE and score >= COMMUNITY_DISPLAY_ULTRA_MIN_FUZZ:
+        return True
+    return False
+
+
+def _community_context_for_llm(matches: list[dict]) -> str:
+    """Inject into the chat prompt so the model can use tips as non-authoritative context."""
+    if not matches:
+        return ""
+    lines = [
+        "---",
+        "Community field notes (NOT from the manual; user-contributed; may be wrong).",
+        "You may use them only to inform practical suggestions in your Assistant notes.",
+        "Never present them as OEM manual facts; never copy them as if they were excerpt text.",
+        "",
+    ]
+    for i, m in enumerate(matches, 1):
+        qv = _community_one_line(m.get("question") or "", 360)
+        cv = _community_one_line(m.get("comment") or "", 520)
+        av = _community_one_line(m.get("answer_excerpt") or "", 480)
+        lines.append(f"Note {i} (similarity distance {float(m.get('distance', 0.0)):.3f}):")
+        if qv:
+            lines.append(f"  Saved question: {qv}")
+        if av:
+            lines.append(f"  Saved assistant snapshot: {av}")
+        if cv:
+            lines.append(f"  User comment: {cv}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
 WHISPER_STT_ENABLED = os.environ.get("WHISPER_STT", "1").strip().lower() not in {"0", "false", "no"}
 WHISPER_MAX_UPLOAD_BYTES = max(1, int(os.environ.get("WHISPER_MAX_UPLOAD_MB", "25"))) * 1024 * 1024
 _WHISPER_AUDIO_SUFFIXES = frozenset(
@@ -271,29 +388,47 @@ RECIPE_SESSION_TTL_S = max(60, int(os.environ.get("RECIPE_SESSION_TTL_S", "7200"
 RECIPE_SESSION_MAX = max(16, int(os.environ.get("RECIPE_SESSION_MAX", "300")))
 RECIPE_TITLE_MATCH_MIN_SCORE = float(os.environ.get("RECIPE_TITLE_MATCH_MIN_SCORE", "0.72"))
 RECIPE_SYSTEM = (
-    "You only use the recipes provided in the user message. "
-    "Never invent dishes, ingredients, or steps that are not supported by those recipes."
+    "You only use the manual records provided in the user message. "
+    "Never invent fault codes, part numbers, procedures, values, or steps not supported by those records. "
+    "Always answer in the same language as the user's latest message (Italian or English)."
 )
 
-RAG_SYSTEM = """You are a manual assistant for a cookbook-style PDF. You will receive prior conversation (if any), then manual excerpts, then the user's latest question.
+RAG_SYSTEM = """You are an offline assistant for industrial machine manuals. You will receive prior conversation (if any), manual excerpts, optional community field notes, then the user's latest question.
 
-Answer in **exactly two** labeled parts (do not add a third part):
+The application **shows the user a focused subset of retrieved passages** (best match first as Excerpt 1 / Passage 1 — same text as in your message). Your reply must be **only** the section below — do **not** re-paste large blocks of excerpt text. When you mention a technical fact (fault code, torque, pressure, temperature, part name, step order, warning, or a counted list of symbol types), **tie it explicitly** to the supporting excerpt (e.g. "Excerpt 1 …") or say clearly that **the retrieved passages do not contain** that detail. If Excerpt 1 lists enumerated items that answer a "how many types" question, you may count only those items that are explicitly named in that excerpt. Never state numbers or items not supported by the excerpts.
 
-1) **From the manual** — Only what is supported by the excerpts below. Quote or paraphrase faithfully (ingredients, steps, times, titles). If the excerpts do not contain a recipe or direct answer, say briefly that the manual does not cover it in these passages. Do NOT invent steps or ingredients here. Never cite or imply "the book says" anything that is not in the excerpts.
+If a "Community field notes" block is present, it is **user-contributed, not OEM manual text**. You may use it only to inform **general** practical suggestions; never cite it as authoritative specifications.
 
-2) **In my view (not from the manual)** — Short optional suggestions: modern substitutions, sides, safety tips, or variations using general cooking knowledge. This section MUST be clearly separate from part 1. You MUST NOT present this part as coming from the manual. If part 1 already fully answers a narrow factual question with no room for useful extras, you may use one line such as "No strong extras beyond the manual for this question."
+Begin your reply with this exact heading line:
+### Assistant notes (interpretation — general practice; manual facts only when tied to an excerpt above)
 
-**Do not** write any "Community", "other users", or similar section. **Do not** invent tips attributed to people. The application adds verified community tips separately when they exist.
+Then:
+- Answer strictly from the manual excerpts for **factual** claims; for anything not in the excerpts, say it is not in the retrieved passages (do not guess).
+- Add brief practical guidance (diagnostics, isolation, safety) as your own view, clearly separate from manual facts.
+- If community notes align with the question, you may mention that "saved field notes suggest …" in one short phrase — still not as manual truth.
+
+**Do not** write a "Community" appendix yourself. **Do not** invent attributed tips. The application appends a verified community section only when a tip strongly matches the question.
 
 Rules:
-- OCR/typos: treat near-matches as the same dish when meaning matches (e.g. English vs Italian titles). The scan may use **souce** instead of **sauce** — treat as the same word.
-- If a "Retrieval note" explains spelling/title variants, treat that recipe as matching the user's question.
-- **Page numbers:** Only cite pages exactly as shown in the excerpt lines (e.g. `Excerpt 2 (page 29, ...)`). Never invent or guess a page (e.g. do not say "page 34" unless that page appears in an excerpt header you were given).
-- **Proteins:** If the user asks about **chicken** or **fried chicken** / **Pollo fritto**, describe steps only from excerpts that actually mention **chicken** (or that Italian title in the same block). Do **not** substitute **lamb**, **veal**, or **mutton** from another excerpt unless the user asked for that meat.
-- Use conversation history only for understanding references ("it", "that dish"); facts still come from excerpts in part 1.
-- If the user names a specific dish (e.g. Pavese soup), base part 1 on excerpts that name or clearly describe that dish; do not substitute a different recipe (e.g. another bread soup) unless the excerpts provided do not contain the named dish at all — then say the manual excerpts do not show it and answer briefly from what is shown.
-- Many recipes have **both** an English and an Italian title (e.g. BROWN STOCK and Sugo di Carne). Treat them as the same dish when the procedure matches; do not say the manual has no match if an excerpt clearly describes that stock/sauce.
+- OCR/typos: treat near-matches as the same machine term when meaning matches (e.g. alarm code variants, English vs Italian labels).
+- If a "Retrieval note" explains spelling/title variants, treat that machine item as matching the user's question.
+- **Page numbers:** Only cite pages exactly as shown in the excerpt lines (e.g. `Excerpt 2 (page 29, ...)` or "Passage 1"). Never invent or guess a page.
+- When the user asks about a specific machine/subsystem/fault code, prefer excerpts that mention that exact target; do not substitute another subsystem unless no matching excerpt exists.
+- Use conversation history only for understanding references ("it", "that unit"); facts still come from the excerpts.
+- Language: same as the user's latest question (Italian or English).
 - Stay concise unless the user asks for detail."""
+
+MANUAL_ORGANIZE_SYSTEM = """You reformat manual excerpt text for readability only (layout task).
+
+Hard rules:
+- Output Markdown only. Do not start with `#` / `##` / `###` headings; begin with bullets or **short labels** so the host UI can wrap your output in its own section title.
+- Use short bullet lists for distinct hazard/symbol/category labels that appear as separate phrases or lines in the source. Remove duplicate lines and collapse excessive blank lines.
+- Do NOT add facts, counts, ISO norms, or wording not clearly supported by the input. If the source lists names like "Pericolo generico" / "Pericolo di schiacciamento", reproduce them as bullets without inventing extra types.
+- If the user question asks how many types/categories appear and the source text enumerates distinct names on separate lines, include every such name as a bullet; then add exactly one closing line: `Riassunto: nel testo compaiono N voci distinte.` where N is the number of bullets you listed (only if N is at least 2 and every bullet came from the source).
+- If the source does not state a total count, do not state a number; list only what appears.
+- Keep [TABLE: ...] material: one bullet per table caption row when it encodes AVVISO/PERICOLO/AVVERTIMENTO blocks.
+- If you see "[... excerpt truncated ...]", do not fill in missing text.
+- Match the dominant language of the excerpts (Italian vs English). No chitchat, no preface about yourself."""
 
 store = VectorStore(STORE_DIR)
 recipe_catalog = RecipeCatalog(RECIPE_STORE_DIR)
@@ -344,6 +479,7 @@ def _strip_model_community_section(text: str) -> str:
         r"(?is)\n+\s*3\)\s*\*\*Community\b.*",
         r"(?is)\n+\s*\*\*3\)\s*Community\b.*",
         r"(?is)\n+\s*###\s*3\.\s*Community\b.*",
+        r"(?is)\n+\s*###\s*Community\b.*",
     )
     for pat in patterns:
         t2 = re.sub(pat, "", t, count=1)
@@ -353,12 +489,14 @@ def _strip_model_community_section(text: str) -> str:
 
 
 def _format_community_answer_append(matches: list[dict]) -> str:
-    """Deterministic part 3 from Chroma only (no LLM)."""
+    """Deterministic community block from Chroma only (no LLM), after manual + assistant."""
     if not matches:
         return ""
     lines = [
         "",
-        "3) **Community (other users, not verified)**",
+        "---",
+        "",
+        "### Community (other users, not verified)",
         "",
     ]
     for m in matches:
@@ -582,17 +720,97 @@ def _infer_recipe_mode(q: str) -> str:
 
 
 def _recipe_user_prompt(mode: str, query: str, recipes_block: str) -> str:
+    lang = "Italian" if _detect_answer_language(query) == "it" else "English"
     if mode == "explain":
-        return PROMPT_EXPLAIN_MATCH.format(QUERY=query, RECIPES=recipes_block)
+        base = PROMPT_EXPLAIN_MATCH.format(QUERY=query, RECIPES=recipes_block)
+        return f"{base}\n\nRespond in {lang}."
     if mode == "vague":
-        return PROMPT_VAGUE.format(QUERY=query, RECIPES=recipes_block)
+        base = PROMPT_VAGUE.format(QUERY=query, RECIPES=recipes_block)
+        return f"{base}\n\nRespond in {lang}."
     if mode == "direct":
-        return PROMPT_DIRECT_RECIPE.format(QUERY=query, RECIPES=recipes_block)
-    return PROMPT_SHOW_MATCHING.format(QUERY=query, RECIPES=recipes_block)
+        base = PROMPT_DIRECT_RECIPE.format(QUERY=query, RECIPES=recipes_block)
+        return f"{base}\n\nRespond in {lang}."
+    base = PROMPT_SHOW_MATCHING.format(QUERY=query, RECIPES=recipes_block)
+    return f"{base}\n\nRespond in {lang}."
+
+
+_ITALIAN_MARKERS = {
+    "il",
+    "lo",
+    "la",
+    "gli",
+    "le",
+    "dei",
+    "delle",
+    "della",
+    "dello",
+    "nel",
+    "nella",
+    "con",
+    "per",
+    "come",
+    "dopo",
+    "prima",
+    "ricetta",
+    "manuale",
+    "ingrediente",
+    "ingredienti",
+    "procedura",
+    "passo",
+    "passi",
+    "macchina",
+    "manutenzione",
+}
+_ENGLISH_MARKERS = {
+    "the",
+    "and",
+    "with",
+    "for",
+    "from",
+    "after",
+    "before",
+    "recipe",
+    "manual",
+    "ingredients",
+    "procedure",
+    "step",
+    "steps",
+    "machine",
+    "maintenance",
+    "how",
+    "what",
+}
+
+
+def _detect_answer_language(text: str) -> str:
+    """
+    Lightweight language guess between Italian and English.
+    Defaults to English on ties to keep behavior stable.
+    """
+    toks = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ']+", (text or "").lower())
+    if not toks:
+        return "en"
+    it_score = sum(1 for t in toks if t in _ITALIAN_MARKERS)
+    en_score = sum(1 for t in toks if t in _ENGLISH_MARKERS)
+    # Italian accented chars are a strong hint.
+    if re.search(r"[àèéìòù]", text.lower()):
+        it_score += 2
+    return "it" if it_score > en_score else "en"
+
+
+def _answer_language_directive(user_q: str) -> str:
+    lang = _detect_answer_language(user_q)
+    if lang == "it":
+        return (
+            "Language directive: Rispondi in italiano. "
+            "Usa termini tecnici chiari e naturali in italiano."
+        )
+    return "Language directive: Respond in English. Use clear, concise technical English."
 
 
 def _grounded_recipe_answer(query: str, recipe: dict, parts: dict[str, float]) -> str:
-    """Deterministic, citation-friendly answer that only uses extracted catalog fields."""
+    """Deterministic, citation-friendly answer using extracted manual record fields only."""
+    lang = _detect_answer_language(query)
     title = (recipe.get("title") or "").strip()
     page = recipe.get("page", "?")
     ingredients = [str(x).strip() for x in (recipe.get("ingredients") or []) if str(x).strip()]
@@ -602,30 +820,46 @@ def _grounded_recipe_answer(query: str, recipe: dict, parts: dict[str, float]) -
         title = infer_title_from_text(full_text)
     fallback_steps = fallback_steps_from_prose(full_text)
 
-    lines: list[str] = [
-        f"Recipe Name: {title}",
-        "",
-        "Ingredients:",
-    ]
+    if lang == "it":
+        recipe_name_label = "Titolo Procedura"
+        ingredients_label = "Componenti / Parametri"
+        instructions_label = "Passi Operativi"
+        unclear = "Non chiaramente estratto dal testo sorgente"
+        source_note = (
+            "Nota fonte: Questa risposta e basata solo sul testo estratto dal PDF "
+            f"(pagina {page})."
+        )
+        match_reason = "Motivo della corrispondenza alla richiesta"
+        extracted_text_label = "Testo Sorgente Estratto"
+    else:
+        recipe_name_label = "Procedure Title"
+        ingredients_label = "Components / Parameters"
+        instructions_label = "Operational Steps"
+        unclear = "Not clearly extracted from source text"
+        source_note = (
+            "Source note: This output is grounded only in extracted PDF text "
+            f"(page {page})."
+        )
+        match_reason = "Match reason for query"
+        extracted_text_label = "Extracted Source Text"
+
+    lines: list[str] = [f"{recipe_name_label}: {title}", "", f"{ingredients_label}:"]
     if ingredients:
         lines.extend(f"- {x}" for x in ingredients)
     else:
-        lines.append("- Not clearly extracted from source text")
+        lines.append(f"- {unclear}")
 
     lines.append("")
-    lines.append("Instructions:")
+    lines.append(f"{instructions_label}:")
     if instructions:
         lines.extend(f"{i}. {x}" for i, x in enumerate(instructions, 1))
     elif fallback_steps:
         lines.extend(f"{i}. {x}" for i, x in enumerate(fallback_steps, 1))
     else:
-        lines.append("1. Not clearly extracted from source text")
+        lines.append(f"1. {unclear}")
 
     lines.append("")
-    lines.append(
-        "Source note: This output is grounded only in extracted PDF text "
-        f"(page {page})."
-    )
+    lines.append(source_note)
     cov = parts.get("coverage")
     bg = parts.get("bigram")
     tail = f"(embed={parts.get('embed', 0.0):.3f}, fuzzy={parts.get('fuzzy', 0.0):.3f}"
@@ -635,13 +869,13 @@ def _grounded_recipe_answer(query: str, recipe: dict, parts: dict[str, float]) -
         tail += f", phrase={float(bg):.3f}"
     tail += ")."
     lines.append(
-        f"Match reason for query '{query}': hybrid="
+        f"{match_reason} '{query}': hybrid="
         f"{parts.get('embed', 0.0) * RECIPE_W_EMBED + parts.get('fuzzy', 0.0) * RECIPE_W_FUZZY:.3f} "
         + tail
     )
     if full_text:
         lines.append("")
-        lines.append("Extracted Source Text:")
+        lines.append(f"{extracted_text_label}:")
         lines.append(full_text if len(full_text) <= 3200 else full_text[:3200] + "\n[... truncated ...]")
     return "\n".join(lines)
 
@@ -661,6 +895,24 @@ def _pick_docs_pdf() -> Path | None:
     return pdfs[0] if pdfs else None
 
 
+def _resolve_active_manual_pdf_path() -> Path | None:
+    """Filesystem path for the PDF that built the active vector index (for /api/manual)."""
+    name = (store.source_file or "").strip()
+    if name:
+        base = Path(name).name
+        if base:
+            for d in (MANUALS_DIR, DOCS_DIR):
+                cand = d / base
+                if cand.is_file() and cand.suffix.lower() == ".pdf":
+                    return cand
+    if CURRENT_MANUAL_PATH.is_file():
+        return CURRENT_MANUAL_PATH
+    doc = _pick_docs_pdf()
+    if doc is not None and doc.is_file():
+        return doc
+    return None
+
+
 async def _build_index_from_pdf(
     pdf_path: Path,
     source_name: str,
@@ -670,9 +922,35 @@ async def _build_index_from_pdf(
     """
     apply_recipe_normalize: None = use env RAG_RECIPE_NORMALIZE; False = skip LLM page cleanup.
     """
-    pages = extract_pages_cleaned(pdf_path)
-    if not pages:
-        raise RuntimeError(f"No extractable text in {pdf_path.name}")
+    use_pdf_pipeline = RAG_PDF_PIPELINE
+    if use_pdf_pipeline:
+        try:
+            from manual_pdf_pipeline.pipeline import (
+                apply_normalized_pages_to_enriched,
+                extract_enriched_pages,
+                finalize_chunks_from_enriched,
+            )
+        except ImportError as e:
+            print(f"[RAG] manual_pdf_pipeline not available ({e}); falling back to pypdf ingest.")
+            use_pdf_pipeline = False
+
+    pages: list[tuple[int, str]]
+    chunks: list[dict]
+
+    if use_pdf_pipeline:
+        print(f"[RAG] Ingesting with pdfplumber pipeline: {pdf_path.name}")
+        enriched = extract_enriched_pages(
+            pdf_path,
+            page_start=RAG_PIPELINE_PAGE_START,
+            page_end=RAG_PIPELINE_PAGE_END,
+        )
+        pages = enriched_pages_to_recipe_pages(enriched)
+        if not pages:
+            raise RuntimeError(f"No extractable text in {pdf_path.name} (pdf pipeline)")
+    else:
+        pages = extract_pages_cleaned(pdf_path)
+        if not pages:
+            raise RuntimeError(f"No extractable text in {pdf_path.name}")
 
     do_normalize = RAG_RECIPE_NORMALIZE if apply_recipe_normalize is None else apply_recipe_normalize
     if do_normalize:
@@ -697,7 +975,24 @@ async def _build_index_from_pdf(
                 timeout_s=RAG_RECIPE_TIMEOUT_S,
             )
 
-    chunks = pages_to_chunks(pages)
+    if use_pdf_pipeline:
+        apply_normalized_pages_to_enriched(enriched, pages)
+        chunks_final, pstats = finalize_chunks_from_enriched(
+            enriched,
+            source_name or pdf_path.name,
+            min_words=RAG_PIPELINE_MIN_WORDS,
+            max_tokens=RAG_PIPELINE_MAX_TOKENS,
+            overlap_tokens=RAG_PIPELINE_OVERLAP,
+        )
+        chunks = pipeline_json_to_store_chunks(chunks_final)
+        print(
+            f"[RAG] Pipeline: {pstats.get('total_chunks')} chunks; "
+            f"tables_serialized={pstats.get('tables_serialized')} "
+            f"thin_merged={pstats.get('thin_pages_merged')}"
+        )
+    else:
+        chunks = pages_to_chunks(pages)
+
     if not chunks:
         raise RuntimeError(f"No chunks after processing {pdf_path.name}")
 
@@ -718,14 +1013,167 @@ async def _build_index_from_pdf(
     return len(chunks)
 
 
+def _strip_chunk_context_header(text: str) -> str:
+    """Remove pdf_pipeline context header (Document/Section/.../---) from chunk body."""
+    return _CHUNK_CTX_HEADER_RE.sub("", (text or "").lstrip())
+
+
+def _chunk_text_for_display(text: str) -> str:
+    """Strip internal metadata header and mild whitespace cleanup before excerpting."""
+    t = _strip_chunk_context_header((text or "").strip())
+    t = re.sub(r"[ \t]+\n", "\n", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
+
+
+def _organize_chunk_text_lines(text: str) -> str:
+    """Deterministic cleanup: strip trailing spaces per line, drop consecutive duplicate lines."""
+    lines = [ln.rstrip() for ln in (text or "").splitlines()]
+    out: list[str] = []
+    prev_nonempty: str | None = None
+    for ln in lines:
+        if not ln.strip():
+            if out and out[-1] != "":
+                out.append("")
+            continue
+        core = re.sub(r" {2,}", " ", ln.strip())
+        if core == prev_nonempty:
+            continue
+        prev_nonempty = core
+        out.append(core)
+    while out and out[-1] == "":
+        out.pop()
+    return "\n".join(out)
+
+
+def _strip_md_fences(text: str) -> str:
+    t = (text or "").strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z0-9_-]*\s*\n?", "", t)
+        t = re.sub(r"\n?```\s*$", "", t)
+    return t.strip()
+
+
+def _hits_blob_for_organize(hits: list[tuple[dict, float]], max_chars: int) -> str:
+    parts: list[str] = []
+    n = 0
+    for ch, _sc in hits:
+        ps = ch.get("page", "?")
+        pe = ch.get("page_end")
+        disp = f"{ps}–{pe}" if pe is not None and pe != ps else str(ps)
+        body = _organize_chunk_text_lines(_chunk_text_for_display(ch.get("text", "") or ""))
+        room = max_chars - n - 24
+        if room < 200:
+            break
+        piece = f"--- Pages {disp} ---\n{body[:room]}"
+        parts.append(piece)
+        n += len(piece) + 2
+    return "\n\n".join(parts)[:max_chars]
+
+
+async def _organize_manual_excerpts_llm(
+    session: aiohttp.ClientSession,
+    query: str,
+    hits: list[tuple[dict, float]],
+) -> str:
+    """Second-pass layout: structured Markdown from retrieved text only (strict)."""
+    blob = _hits_blob_for_organize(hits, RAG_MANUAL_ORGANIZE_MAX_CHARS)
+    if not blob.strip():
+        return ""
+    user_msg = (
+        "User question (context only — do not invent facts beyond the manual text):\n"
+        f"{query}\n\n"
+        "Prioritize passages that directly answer this question (e.g. Simbologia / hazard categories). "
+        "De-emphasize boilerplate from other sections if it is not in the excerpt text below.\n\n"
+        "---\n\nManual excerpt text to reorganize:\n"
+        f"{blob}"
+    )
+    opts = {"num_predict": RAG_MANUAL_ORGANIZE_MAX_TOKENS, "temperature": 0.0}
+    org_model = os.environ.get("RAG_MANUAL_ORGANIZE_MODEL", "").strip() or CHAT_MODEL
+    raw = await ollama_chat(
+        session,
+        org_model,
+        [
+            {"role": "system", "content": MANUAL_ORGANIZE_SYSTEM},
+            {"role": "user", "content": user_msg},
+        ],
+        stream=False,
+        options=opts,
+        timeout_s=RAG_MANUAL_ORGANIZE_TIMEOUT_S,
+    )
+    out = _strip_md_fences(raw)
+    out = re.sub(r"^(?:#{1,6}\s.*\n)+", "", out.strip(), flags=re.MULTILINE)
+    return out.strip()
+
+
 def _format_context(results: list[tuple[dict, float]]) -> str:
     parts: list[str] = []
     for i, (ch, score) in enumerate(results, 1):
-        page = ch.get("page", "?")
-        parts.append(
-            f"--- Excerpt {i} (page {page}, score {score:.3f}) ---\n{ch['text']}"
-        )
+        ps = ch.get("page", "?")
+        pe = ch.get("page_end")
+        if pe is not None and pe != ps:
+            page_disp = f"{ps}-{pe}"
+        else:
+            page_disp = str(ps)
+        txt = _chunk_text_for_display(ch.get("text", "") or "")
+        if len(txt) > RAG_EXCERPT_MAX_CHARS:
+            txt = txt[:RAG_EXCERPT_MAX_CHARS].rstrip() + "\n[... excerpt truncated ...]"
+        parts.append(f"--- Excerpt {i} (page {page_disp}, score {score:.3f}) ---\n{txt}")
     return "\n\n".join(parts)
+
+
+def _format_manual_answer_preamble(
+    results: list[tuple[dict, float]],
+    organized_markdown: str | None = None,
+) -> str:
+    """
+    Manual block: optional LLM-organized view (strict), then per-page passages with light layout cleanup.
+    """
+    lines: list[str] = [
+        "### From the manual (retrieved passages)",
+        "",
+        "Sotto trovi i passaggi **più pertinenti** a questa domanda (RAG: riordinati per rilevanza; Passaggio 1 = miglior corrispondenza). "
+        "La sintesi strutturata riordina solo quel testo, senza aggiungere fatti.",
+        "",
+    ]
+    org = (organized_markdown or "").strip()
+    if org:
+        lines.append("### Sintesi strutturata (solo dal testo degli estratti)")
+        lines.append("")
+        lines.append(org)
+        lines.append("")
+        lines.append("### Estratti per pagina (testo indicizzato)")
+        lines.append("")
+    for i, (ch, _score) in enumerate(results, 1):
+        ps = ch.get("page", "?")
+        pe = ch.get("page_end")
+        if pe is not None and pe != ps:
+            page_disp = f"pages {ps}–{pe}"
+        else:
+            page_disp = f"page {ps}"
+        raw = _chunk_text_for_display(ch.get("text", "") or "")
+        txt = _organize_chunk_text_lines(raw)
+        if len(txt) > RAG_EXCERPT_MAX_CHARS:
+            txt = txt[:RAG_EXCERPT_MAX_CHARS].rstrip() + "\n[... excerpt truncated ...]"
+        lines.append(f"**Passage {i}** ({page_disp})")
+        lines.append("")
+        lines.append(txt)
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+_LEGACY_LLM_PART2 = re.compile(
+    r"(?is)\n*\s*2\)\s*\*\*In my view(?:\s*\([^)]*\))?\*\*\s*",
+)
+
+
+def _strip_legacy_manual_part_from_llm(text: str) -> str:
+    """If the model still emits the old two-part answer, drop part 1 (manual) — the server prepends passages."""
+    t = (text or "").strip()
+    m = _LEGACY_LLM_PART2.search(t)
+    if m:
+        return t[m.end() :].strip()
+    return t
 
 
 def _norm(s: str) -> str:
@@ -803,6 +1251,42 @@ def _embedding_query_boost(q: str) -> str:
                 "POLENTA PIE",
                 "Polenta Pasticciata",
                 "polenta pasticciata cornmeal mush milk carrot onion celery bacon",
+            ]
+        )
+    # Industrial manual bridge: maintenance frequencies, periodic plans, and service sections.
+    if any(x in ql for x in ("manutenzione", "maintenance", "service", "ispezione", "inspection")):
+        extras.extend(
+            [
+                "maintenance plan",
+                "preventive maintenance",
+                "periodic maintenance",
+                "scheduled service",
+                "maintenance tasks and checklist",
+            ]
+        )
+    if any(x in ql for x in ("annuale", "annually", "yearly", "annually")):
+        extras.extend(["manutenzione annuale", "annual maintenance", "yearly maintenance"])
+    if any(x in ql for x in ("mensile", "monthly")):
+        extras.extend(["manutenzione mensile", "monthly maintenance"])
+    if any(x in ql for x in ("settimanale", "weekly")):
+        extras.extend(["manutenzione settimanale", "weekly maintenance"])
+    if any(x in ql for x in ("giornaliera", "daily", "quotidiana")):
+        extras.extend(["manutenzione giornaliera", "daily maintenance"])
+    if any(x in ql for x in ("trimestrale", "quarterly")):
+        extras.extend(["manutenzione trimestrale", "quarterly maintenance"])
+    if any(x in ql for x in ("quadrimestrale", "every 4 months", "4 months")):
+        extras.extend(["manutenzione quadrimestrale", "every four months maintenance"])
+    if "2000 ore" in ql or "2000 hours" in ql:
+        extras.extend(["maintenance every 2000 hours", "manutenzione ogni 2000 ore"])
+    # Safety pictograms / hazard labels (Italian manuals).
+    if any(x in ql for x in ("simbol", "simbolog", "pittogram", "pericol", "avvert", "avvis")) or (
+        "sicurezza" in ql and "simbol" in ql
+    ):
+        extras.extend(
+            [
+                "Simbologia simboli di sicurezza messaggi PERICOLO AVVERTIMENTO AVVISO",
+                "safety symbols hazard warning notice pictograms",
+                "sezione simbologia sicurezza",
             ]
         )
     if not extras:
@@ -921,6 +1405,41 @@ def _italian_english_dish_bonus(lo: str, q: str) -> float:
     return b
 
 
+_FOOD_HINT_TOKENS = frozenset(
+    {
+        "recipe",
+        "recipes",
+        "dish",
+        "soup",
+        "sauce",
+        "stock",
+        "broth",
+        "pomodoro",
+        "pomidoro",
+        "pollo",
+        "chicken",
+        "veal",
+        "lamb",
+        "mutton",
+        "polenta",
+        "pasta",
+        "macaroni",
+        "spaghetti",
+        "ingredient",
+        "ingredients",
+        "bake",
+        "boil",
+        "fry",
+    }
+)
+
+
+def _is_food_query(q: str) -> bool:
+    ql = (q or "").lower()
+    toks = set(re.findall(r"[a-zà-öø-ÿ]{3,}", ql))
+    return len(toks & _FOOD_HINT_TOKENS) >= 1
+
+
 def _named_dish_token_bonus(lo: str, ql: str) -> float:
     """Large bonus when a distinctive dish token in the query appears in the chunk (disambiguates generic words like 'bread')."""
     bonus = 0.0
@@ -1033,6 +1552,27 @@ def _query_terms_weighted(q: str) -> list[tuple[str, float]]:
     return out
 
 
+def _query_coverage_ratio(text: str, q: str) -> float:
+    """
+    Fraction of distinctive query tokens found in a chunk.
+    Helps keep retrieval anchored to the requested machine/procedure terms.
+    """
+    q_terms = [t for t in _query_terms(q) if t not in _STOP]
+    if not q_terms:
+        q_terms = _query_terms(q)
+    if not q_terms:
+        return 0.0
+    lo = (text or "").lower()
+    compact = _norm(text or "")
+    uniq = list(dict.fromkeys(q_terms))
+    hit = 0
+    for t in uniq:
+        nt = _norm(t)
+        if (t in lo) or (nt and nt in compact):
+            hit += 1
+    return hit / max(1, len(uniq))
+
+
 def _compound_phrase_bonus(compact: str, terms: list[str]) -> float:
     """
     OCR often glues titles: MACARONINAPOLITAINE. Reward joined query tokens in order.
@@ -1072,6 +1612,138 @@ def _recipe_step_bonus(text: str) -> float:
     return min(2.5, 0.18 * hits)
 
 
+def _maintenance_chunk_bonus(text: str, q: str) -> float:
+    """Industrial maintenance lexical booster: frequencies, section labels, and code IDs."""
+    lo = (text or "").lower()
+    ql = (q or "").lower()
+    bonus = 0.0
+    if not lo or not ql:
+        return 0.0
+
+    # Period/frequency intent
+    if any(x in ql for x in ("manutenzione", "maintenance", "service", "ispezione", "inspection")):
+        if any(x in lo for x in ("manutenzione", "maintenance", "service", "ispezione", "inspection")):
+            bonus += 14.0
+    pairs = (
+        (("annuale", "yearly", "annual"), ("annuale", "annual", "yearly")),
+        (("mensile", "monthly"), ("mensile", "monthly")),
+        (("settimanale", "weekly"), ("settimanale", "weekly")),
+        (("giornaliera", "daily", "quotidiana"), ("giornaliera", "daily", "quotidiana")),
+        (("trimestrale", "quarterly"), ("trimestrale", "quarterly")),
+        (("quadrimestrale", "4 months", "every 4 months"), ("quadrimestrale", "four months", "4 months")),
+    )
+    for ask_terms, hit_terms in pairs:
+        if any(t in ql for t in ask_terms) and any(t in lo for t in hit_terms):
+            bonus += 22.0
+
+    if ("2000 ore" in ql or "2000 hours" in ql) and ("2000 ore" in lo or "2000 hours" in lo):
+        bonus += 24.0
+
+    # Procedure/code references: e.g. [MQ1], IM1, MY13
+    q_codes = [c.upper() for c in re.findall(r"\b[A-Z]{1,3}\d{1,4}\b", q.upper())]
+    if q_codes:
+        up = (text or "").upper()
+        for c in q_codes:
+            if f"[{c}]" in up or c in up:
+                bonus += 34.0
+    return bonus
+
+
+def _manual_safety_symbols_query_bonus(q: str, text: str) -> float:
+    """Up-rank chunks about safety pictograms / hazard messages when the user asks in that area."""
+    ql = (q or "").lower()
+    lo = (text or "").lower()
+    if not ql or not lo:
+        return 0.0
+    wants = any(
+        x in ql
+        for x in (
+            "simbol",
+            "simbolog",
+            "pittogram",
+            "pericol",
+            "avvert",
+            "avvis",
+            "messaggi di sicurezza",
+            "warning symbol",
+            "hazard symbol",
+        )
+    )
+    if not wants:
+        return 0.0
+    bonus = 0.0
+    if "simbologia" in lo:
+        bonus += 52.0
+    if "simboli" in lo and "sicurezza" in lo:
+        bonus += 38.0
+    if "messaggi di sicurezza" in lo:
+        bonus += 36.0
+    if "simboli specifici" in lo or ("categ" in lo and "simbol" in lo):
+        bonus += 28.0
+    if "pericolo" in lo and ("avvertimento" in lo or "avviso" in lo):
+        bonus += 22.0
+    for needle in ("pericolo", "avvertimento", "avviso", "grave infortunio", "infortunio o morte"):
+        if needle in lo:
+            bonus += 5.0
+    return min(bonus, 130.0)
+
+
+def _hard_lexical_recall(chunks: list[dict], q: str, top_k: int = 6) -> list[tuple[dict, float]]:
+    """
+    Force recall of chunks that contain exact multi-word phrases/codes from the query.
+    Useful for maintenance labels where vector search can drift.
+    """
+    ql = (q or "").lower()
+    extra: list[str] = []
+    if any(x in ql for x in ("simbol", "simbolog", "pittogram", "pericol", "avvert", "avvis")):
+        extra.extend(
+            [
+                "simbologia",
+                "simboli",
+                "messaggi di sicurezza",
+                "simboli specifici",
+                "pericolo avvertimento",
+            ]
+        )
+    toks = [t for t in _query_terms(q) if t not in _STOP]
+    if len(toks) < 2 and not extra:
+        return []
+    phrases: list[str] = list(extra)
+    for n in (3, 2):
+        for i in range(0, len(toks) - n + 1):
+            ph = " ".join(toks[i : i + n])
+            if len(ph) >= 8:
+                phrases.append(ph)
+    phrases = list(dict.fromkeys(phrases))[:20]
+    if not phrases:
+        return []
+    q_codes = [c.upper() for c in re.findall(r"\b[A-Z]{1,3}\d{1,4}\b", q.upper())]
+
+    scored: list[tuple[dict, float]] = []
+    for ch in chunks:
+        txt = ch.get("text", "")
+        if not txt:
+            continue
+        lo = txt.lower()
+        compact = _norm(txt)
+        score = 0.0
+        for ph in phrases:
+            score += 22.0 * lo.count(ph)
+            score += 16.0 * compact.count(_norm(ph))
+        if q_codes:
+            up = txt.upper()
+            for c in q_codes:
+                if f"[{c}]" in up:
+                    score += 42.0
+                elif c in up:
+                    score += 22.0
+        if score > 0:
+            score *= _catalog_penalty(txt)
+            scored.append((ch, float(score)))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:top_k]
+
+
 def _is_index_chunk(text: str) -> bool:
     u = text.upper()
     return "INDEX" in u[:900] or "INDEX,CONTINUED" in u[:1200]
@@ -1098,6 +1770,7 @@ def _keyword_hits(chunks: list[dict], q: str, top_k: int) -> list[tuple[dict, fl
     raw_terms = [t for t, _ in weighted]
     if not raw_terms:
         return []
+    food_q = _is_food_query(q)
     out: list[tuple[dict, float]] = []
     for ch in chunks:
         txt = ch.get("text", "")
@@ -1115,10 +1788,13 @@ def _keyword_hits(chunks: list[dict], q: str, top_k: int) -> list[tuple[dict, fl
             for tv in variants:
                 term_score += lo.count(tv) + 0.85 * compact.count(_norm(tv))
             score += w * term_score
-        score += _italian_english_dish_bonus(lo, q)
-        score += _named_dish_token_bonus(lo, q.lower())
-        score += _fried_chicken_chunk_score_adj(lo, q.lower())
-        score += _recipe_step_bonus(txt)
+        if food_q:
+            score += _italian_english_dish_bonus(lo, q)
+            score += _named_dish_token_bonus(lo, q.lower())
+            score += _fried_chicken_chunk_score_adj(lo, q.lower())
+            score += _recipe_step_bonus(txt)
+        score += _maintenance_chunk_bonus(txt, q)
+        score += _manual_safety_symbols_query_bonus(q, txt)
         score *= _catalog_penalty(txt)
         if score > 0:
             out.append((ch, float(score)))
@@ -1135,20 +1811,28 @@ def _merge_hits(
 ) -> list[tuple[dict, float]]:
     merged: dict[str, tuple[dict, float]] = {}
     ql = (query or "").lower()
+    food_q = _is_food_query(query)
 
     def key_for(ch: dict) -> str:
         return f"{ch.get('page','?')}|{ch.get('text','')[:120]}"
 
     for rank, (ch, sc) in enumerate(vector_hits):
         cat = _catalog_penalty(ch.get("text", ""))
-        step = _recipe_step_bonus(ch.get("text", ""))
-        lo = (ch.get("text") or "").lower()
-        dish = (
-            _named_dish_token_bonus(lo, ql)
-            + _italian_english_dish_bonus(lo, query)
-            + _fried_chicken_chunk_score_adj(lo, ql)
-        )
-        score = (sc * 2.0) * cat + step + dish + max(0.0, 1.0 - rank * 0.08)
+        if food_q:
+            step = _recipe_step_bonus(ch.get("text", ""))
+            lo = (ch.get("text") or "").lower()
+            dish = (
+                _named_dish_token_bonus(lo, ql)
+                + _italian_english_dish_bonus(lo, query)
+                + _fried_chicken_chunk_score_adj(lo, ql)
+            )
+        else:
+            step = 0.0
+            dish = 0.0
+        cov = _query_coverage_ratio(ch.get("text", ""), query)
+        score = (sc * 2.0) * cat + step + dish + max(0.0, 1.0 - rank * 0.08) + (cov * 42.0)
+        score += _maintenance_chunk_bonus(ch.get("text", ""), query)
+        score += _manual_safety_symbols_query_bonus(query, ch.get("text", ""))
         k = key_for(ch)
         prev = merged.get(k)
         if prev is None or score > prev[1]:
@@ -1156,7 +1840,12 @@ def _merge_hits(
 
     for rank, (ch, sc) in enumerate(lexical_hits):
         lo_lex = (ch.get("text") or "").lower()
-        score = (sc * 2.8) + _fried_chicken_chunk_score_adj(lo_lex, ql) + max(0.0, 0.9 - rank * 0.05)
+        score = (sc * 2.8) + max(0.0, 0.9 - rank * 0.05)
+        if food_q:
+            score += _fried_chicken_chunk_score_adj(lo_lex, ql)
+        score += _query_coverage_ratio(ch.get("text", ""), query) * 58.0
+        score += _maintenance_chunk_bonus(ch.get("text", ""), query)
+        score += _manual_safety_symbols_query_bonus(query, ch.get("text", ""))
         k = key_for(ch)
         prev = merged.get(k)
         if prev is None:
@@ -1166,6 +1855,51 @@ def _merge_hits(
 
     ranked = sorted(merged.values(), key=lambda x: x[1], reverse=True)
     return ranked[:top_k]
+
+
+def _rerank_hits_for_query(q: str, hits: list[tuple[dict, float]]) -> list[tuple[dict, float]]:
+    """Reorder merged hits so chunks that clearly match the question (e.g. simbologia) surface first."""
+    if len(hits) < 2:
+        return hits
+
+    def sort_key(item: tuple[dict, float]) -> tuple[float, float]:
+        ch, sc = item
+        txt = ch.get("text", "") or ""
+        cov = _query_coverage_ratio(txt, q)
+        sym = _manual_safety_symbols_query_bonus(q, txt)
+        return (sym + cov * 14.0, sc)
+
+    return sorted(hits, key=sort_key, reverse=True)
+
+
+def _focus_hits_for_qa(q: str, hits: list[tuple[dict, float]]) -> list[tuple[dict, float]]:
+    """
+    Narrow merged hits to the passages most relevant to this question (Passage 1 = best match).
+    Reduces long, low-relevance OCR dumps in chat and in the user-visible manual block.
+    """
+    if not hits:
+        return hits
+    max_p = RAG_MANUAL_MAX_PASSAGES
+    gap_thr = RAG_MANUAL_FOCUS_SCORE_GAP
+    rows: list[tuple[float, dict, float]] = []
+    for ch, sc in hits:
+        txt = ch.get("text", "") or ""
+        fs = (
+            _manual_safety_symbols_query_bonus(q, txt)
+            + _query_coverage_ratio(txt, q) * 22.0
+            + float(sc) * 0.018
+        )
+        rows.append((fs, ch, sc))
+    rows.sort(key=lambda x: x[0], reverse=True)
+    gap = rows[0][0] - rows[1][0] if len(rows) >= 2 else 0.0
+    if len(rows) >= 2 and gap >= gap_thr * 2.2:
+        take = 1
+    elif len(rows) >= 2 and gap >= gap_thr:
+        take = max(1, min(max_p, 2))
+    else:
+        take = max_p
+    take = min(take, len(rows), max_p)
+    return [(ch, sc) for _, ch, sc in rows[:take]]
 
 
 def _recipe_title_page_boost(
@@ -1178,6 +1912,8 @@ def _recipe_title_page_boost(
     Stops vector search from returning only a generic 'bread' recipe when the user named a specific dish.
     """
     if not RAG_TITLE_PAGE_BOOST or not recipe_catalog.recipes or not store.chunks:
+        return hits
+    if not _is_food_query(q):
         return hits
     qstr = (q or "").strip()
     if len(qstr) < 5:
@@ -1298,6 +2034,83 @@ def _lexical_query_from_history(history: list[dict[str, str]], q: str) -> str:
     return f"{last_user}\n{q}"[:2000]
 
 
+_RAG_SHORT_FOLLOWUP_RE = re.compile(
+    r"\b("
+    r"what\s+('?s|is)\s+next|what\s+do\s+i\s+do\s+next|what\s+next|"
+    r"next\s+step|then\s+what|and\s+then|after\s+that|now\s+what|"
+    r"how\s+long|how\s+much|how\s+many|"
+    r"temperature|degrees|minutes?|hours?|"
+    r"oven|bake|baking\s+time|"
+    r"serve|serving|"
+    r"substitut|instead\s+of"
+    r")\b",
+    re.I,
+)
+
+
+def _is_short_followup_question(q: str) -> bool:
+    """Very short continuations stay on the previous recipe; longer messages run the topic-similarity check."""
+    s = (q or "").strip()
+    if len(s) > RAG_FOLLOWUP_MAX_CHARS:
+        return False
+    return bool(_RAG_SHORT_FOLLOWUP_RE.search(s))
+
+
+def _recent_context_blob(history: list[dict[str, str]]) -> str:
+    """Last few user/assistant turns (for “is this still the same topic?”)."""
+    if not history:
+        return ""
+    tail = history[-4:]
+    lines: list[str] = []
+    for h in tail:
+        role = h.get("role") or ""
+        content = (h.get("content") or "").strip()
+        if not content:
+            continue
+        lines.append(f"{role}: {content[:900]}")
+    blob = "\n".join(lines)
+    return blob[:RAG_TOPIC_CONTEXT_MAX_CHARS]
+
+
+def _cosine_sim_vec(a: np.ndarray, b: np.ndarray) -> float:
+    a64 = a.astype(np.float64, copy=False)
+    b64 = b.astype(np.float64, copy=False)
+    na = float(np.linalg.norm(a64))
+    nb = float(np.linalg.norm(b64))
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return float(np.dot(a64, b64) / (na * nb))
+
+
+async def _retrieval_should_blend_history(
+    session: aiohttp.ClientSession,
+    history: list[dict[str, str]],
+    q: str,
+    embed_model: str,
+) -> bool:
+    """
+    True → blend recent chat into embedding + lexical queries (original behavior).
+    False → treat this turn as a new topic: search with the current message only.
+    """
+    if RAG_RETRIEVAL_BLEND == "always":
+        return True
+    if RAG_RETRIEVAL_BLEND == "never":
+        return False
+    if not history:
+        return False
+    if _is_short_followup_question(q):
+        return True
+    ctx = _recent_context_blob(history)
+    if not ctx.strip():
+        return True
+    try:
+        vecs = await embed_many(session, [ctx, q.strip()], embed_model, concurrency=2)
+        sim = _cosine_sim_vec(vecs[0], vecs[1])
+        return sim >= RAG_TOPIC_CONTINUATION_SIM
+    except Exception:
+        return True
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Localchat Manual RAG")
 
@@ -1397,7 +2210,25 @@ def create_app() -> FastAPI:
                 "community_enabled": bool(community_store is not None and COMMUNITY_ENABLED),
                 "community_tips": int(community_store.count()) if community_store else 0,
                 "whisper_stt_available": bool(WHISPER_STT_ENABLED and _whisper_lib_available()),
+                "manual_pdf_available": bool(_resolve_active_manual_pdf_path()),
             }
+
+    @app.get("/api/manual")
+    async def serve_active_manual():
+        """Serve the PDF that matches the loaded index (inline) for viewer + #page=N deep links."""
+        async with _store_lock:
+            path = _resolve_active_manual_pdf_path()
+        if path is None or not path.is_file():
+            raise HTTPException(
+                404,
+                "No manual PDF found for the active index. Upload a manual or place a PDF in docs/.",
+            )
+        return FileResponse(
+            path,
+            media_type="application/pdf",
+            filename=path.name,
+            content_disposition_type="inline",
+        )
 
     @app.post("/api/transcribe")
     async def transcribe_audio(
@@ -1508,8 +2339,6 @@ def create_app() -> FastAPI:
             raise HTTPException(400, "message is empty")
 
         hist = _sanitize_manual_history(body.history)
-        q_embed = _retrieval_query_from_history(hist, q)
-        q_lex = _lexical_query_from_history(hist, q)
         comm_matches: list[dict] = []
 
         async with _store_lock:
@@ -1518,6 +2347,13 @@ def create_app() -> FastAPI:
 
             try:
                 async with aiohttp.ClientSession() as session:
+                    blend_hist = await _retrieval_should_blend_history(session, hist, q, EMBED_MODEL)
+                    if blend_hist:
+                        q_embed = _retrieval_query_from_history(hist, q)
+                        q_lex = _lexical_query_from_history(hist, q)
+                    else:
+                        q_embed = q
+                        q_lex = q
                     q_std = _embedding_query_boost(q_embed)
                     q_ocr = _embedding_query_boost(_mirror_ocr_for_embed(q_embed))
                     emb_std = await ollama_embed(session, q_std, EMBED_MODEL)
@@ -1530,24 +2366,51 @@ def create_app() -> FastAPI:
                     v_ocr = store.search(emb_ocr, top_k=vk)
                     vector_hits = _merge_dual_vector_hits(v_std, v_ocr, limit=vk)
                     lexical_hits = _keyword_hits(store.chunks, q_lex, top_k=LEXICAL_K)
+                    hard_hits = _hard_lexical_recall(store.chunks, q, top_k=6)
                     hits = _merge_hits(
                         vector_hits,
-                        lexical_hits,
-                        top_k=max(TOP_K, 5),
+                        lexical_hits + hard_hits,
+                        top_k=max(TOP_K, 6),
                         query=q,
                     )
-                    hits = _recipe_title_page_boost(q, hits, top_k=max(TOP_K, 5))
+                    hits = _recipe_title_page_boost(q, hits, top_k=max(TOP_K, 6))
+                    hits = _rerank_hits_for_query(q, hits)
             except Exception as e:
                 raise HTTPException(502, f"Retrieval failed: {e}") from e
 
         if not hits:
             raise HTTPException(500, "Search returned no chunks")
 
-        context = _format_context(hits)
-        bridge = _llm_spelling_bridge(q, hits)
-        # Community tips are not shown to the LLM — appended after generation from DB only.
-        parts = [f"Manual excerpts:\n\n{context}"]
+        hits_focused = _focus_hits_for_qa(q, hits)
+
+        organized_md = ""
+        if RAG_MANUAL_ORGANIZE:
+            try:
+                async with aiohttp.ClientSession() as org_session:
+                    organized_md = await _organize_manual_excerpts_llm(org_session, q, hits_focused)
+            except Exception as e:
+                print(f"[RAG] manual organize skipped: {e!s}")
+                organized_md = ""
+
+        context = _format_context(hits_focused)
+        bridge = _llm_spelling_bridge(q, hits_focused)
+        comm_for_llm = list(comm_matches)
+        comm_for_display = [m for m in comm_for_llm if _community_confident_for_display(q, m)]
+        lang_directive = _answer_language_directive(q)
+        parts = [
+            "Retrieval note: The excerpts below are **focused** on the best-matching passages for this "
+            "question (Excerpt 1 = strongest match). Prefer Excerpt 1 when it directly answers the question.\n\n"
+            f"Manual excerpts:\n\n{context}",
+        ]
+        if organized_md.strip():
+            parts.append(
+                "---\nStructured excerpt view (same indexed text as above; no new facts):\n"
+                + organized_md.strip()
+            )
+        if comm_for_llm:
+            parts.append(_community_context_for_llm(comm_for_llm))
         parts.append(f"---\n\n{bridge}User question: {q}")
+        parts.append(f"---\n\n{lang_directive}")
         user_content = "\n\n".join(parts)
         messages: list[dict[str, str]] = [{"role": "system", "content": RAG_SYSTEM}]
         for h in hist:
@@ -1556,7 +2419,7 @@ def create_app() -> FastAPI:
 
         chat_options = {
             "num_predict": MAX_TOKENS,
-            "temperature": 0.2,
+            "temperature": 0.05,
         }
 
         primary_err = None
@@ -1598,17 +2461,25 @@ def create_app() -> FastAPI:
             raise HTTPException(502, f"Ollama chat failed. Primary ({CHAT_MODEL}): {primary_err}")
 
         answer = _strip_model_community_section(answer)
-        if comm_matches:
-            answer = answer.rstrip() + _format_community_answer_append(comm_matches)
+        answer = _strip_legacy_manual_part_from_llm(answer)
+        manual_front = _format_manual_answer_preamble(hits_focused, organized_md or None)
+        answer = f"{manual_front}\n\n---\n\n{answer.strip()}".strip()
+        if comm_for_display:
+            answer = answer.rstrip() + _format_community_answer_append(comm_for_display)
 
         return {
             "answer": answer,
             "model_used": used_model,
+            "manual_pdf_available": bool(_resolve_active_manual_pdf_path()),
             "sources": [
-                {"page": h[0].get("page"), "score": round(h[1], 4)}
-                for h in hits
+                {
+                    "page": h[0].get("page"),
+                    "page_end": h[0].get("page_end"),
+                    "score": round(h[1], 4),
+                }
+                for h in hits_focused
             ],
-            "community_matches": _community_matches_api(comm_matches),
+            "community_matches": _community_matches_api(comm_for_display),
         }
 
     @app.post("/api/community-save")

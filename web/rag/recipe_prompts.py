@@ -1,44 +1,44 @@
-"""Post-retrieval LLM prompts for recipe search (layer 3)."""
+"""Post-retrieval LLM prompts for manual record search (layer 3)."""
 
-PROMPT_SHOW_MATCHING = """You are a recipe assistant.
+PROMPT_SHOW_MATCHING = """You are an industrial manual assistant.
 
 The user searched for: "{QUERY}"
 
-Here are matching recipes:
+Here are matching manual records:
 
 {RECIPES}
 
 Instructions:
-- Show all relevant recipes
-- Highlight recipe names clearly
-- Do not invent recipes
+- Show all relevant records
+- Highlight procedure/section titles clearly
+- Do not invent fault codes, values, or procedures
 - Keep it concise"""
 
 
-PROMPT_VAGUE = """You are a smart food search assistant.
+PROMPT_VAGUE = """You are a smart technical-manual search assistant.
 
 User query: "{QUERY}"
 
-Based on the available recipes below, find the best matches.
+Based on the available manual records below, find the best matches.
 
 Rules:
 - Match even if the query is incomplete
-- Match similar meaning (e.g., meat → mutton, beef, veal)
+- Match similar meaning (e.g., alarm/fault/warning variants, OCR typos)
 - Ignore small spelling mistakes
 
-Recipes:
+Manual records:
 {RECIPES}
 
 Output:
-- List matching recipe names
-- Short description for each"""
+- List matching record/procedure titles
+- Short reason for each"""
 
 
 PROMPT_EXPLAIN_MATCH = """User searched: "{QUERY}"
 
-Explain why these recipes match the query.
+Explain why these manual records match the query.
 
-Recipes:
+Manual records:
 {RECIPES}
 
 Rules:
@@ -48,19 +48,19 @@ Rules:
 
 PROMPT_DIRECT_RECIPE = """User wants: "{QUERY}"
 
-From the recipes below, return the most relevant one in full format.
+From the manual records below, return the most relevant one in full format.
 
 Rules:
 - Only return one best match
-- Use structured format (ingredients + steps)
+- Use structured format (record title + parameters/components + steps)
 - Do not add new data
 
-Recipes:
+Manual records:
 {RECIPES}"""
 
 
 def format_recipes_for_prompt(recipes: list[dict], max_chars: int = 12000) -> str:
-    """Serialize retrieved records for injection into prompts."""
+    """Serialize retrieved manual records for prompt injection."""
     parts: list[str] = []
     used = 0
     for i, r in enumerate(recipes, 1):
@@ -69,7 +69,7 @@ def format_recipes_for_prompt(recipes: list[dict], max_chars: int = 12000) -> st
         inst = r.get("instructions") or []
         body = r.get("full_text") or ""
         block = (
-            f"### Recipe {i}: {title}\n"
+            f"### Record {i}: {title}\n"
             f"Page: {r.get('page', '?')}\n"
             f"Ingredients:\n"
             + "\n".join(f"  - {x}" for x in ing)

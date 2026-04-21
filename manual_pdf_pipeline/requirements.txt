@@ -1,0 +1,5 @@
+# Standalone deps for manual_pdf_pipeline (pdfplumber-based RAG ingestion).
+pdfplumber==0.11.4
+loguru==0.7.2
+tqdm==4.66.5
+tiktoken==0.8.0

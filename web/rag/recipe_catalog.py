@@ -139,11 +139,15 @@ def _compact_alnum(s: str) -> str:
 
 
 def embed_text_for_recipe(recipe: dict) -> str:
-    title = recipe.get("title") or ""
+    # Title can grow without bound if the PDF misparses many lines as "recipe name" — keep embed payload bounded.
+    title = ((recipe.get("title") or "")[:2000]).strip()
     body_full = recipe.get("full_text") or ""
     first_line = body_full.split("\n", 1)[0].strip() if body_full else ""
+    first_line = first_line[:500]
     compact = _compact_alnum(f"{title} {first_line} {body_full[:1800]}")
     kws = " ".join(recipe.get("keywords") or [])
+    if len(kws) > 1200:
+        kws = kws[:1200]
     body = body_full[:2500]
     return f"{title}\n{first_line}\n{compact}\n{kws}\n{body}"
 

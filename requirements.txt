@@ -19,6 +19,11 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.9
 pypdf>=5.0.0
+# pdfplumber-based manual pipeline (RAG_PDF_PIPELINE=1, default)
+pdfplumber>=0.11.0
+loguru>=0.7.0
+tqdm>=4.66.0
+tiktoken>=0.7.0
 rapidfuzz>=3.0.0
 # Recipe hybrid search; on some ARM boards use `pip install faiss-cpu` from conda-forge or rely on numpy fallback
 faiss-cpu>=1.8.0

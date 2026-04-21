@@ -176,6 +176,15 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    a.source-chip.source-chip-link {
+      text-decoration: none;
+      color: var(--accent);
+      cursor: pointer;
+    }
+    a.source-chip.source-chip-link:hover {
+      border-color: var(--accent);
+      background: #121c28;
+    }
     .community-chip {
       border-color: #3d5a40;
       background: #0f1a12;
@@ -854,7 +863,7 @@
         </button>
         <div class="composer-body" id="composerBody">
           <label>Ask about the manual <span class="kbd-hint">Enter to send · Shift+Enter newline</span><span class="kbd-hint-mobile">Tap Ask to send</span></label>
-          <textarea id="q" placeholder="e.g. ingredients for tomato sauce, how long to bake, substitute for butter"></textarea>
+          <textarea id="q" placeholder="e.g. alarm E12 causes, lubrication interval, reset sequence after overload"></textarea>
           <div class="composer-controls">
             <div class="control-row control-row-primary">
               <button type="button" id="btnAsk">Ask</button>
@@ -898,7 +907,7 @@
     let sttActive = false;
     let sttTranscript = "";
     let sttStopRequested = false;
-    /** null = main chat (#q); community = tip textarea + panel status + optional voice button */
+    /** null = main chat (#q); community = note textarea + panel status + optional voice button */
     let sttContext = null;
 
     let whisperStream = null;
@@ -927,7 +936,7 @@
           b.textContent = "Stop & send";
           b.classList.add("btn-recording");
         } else {
-          b.textContent = commB ? "Whisper to tip" : "Whisper record";
+          b.textContent = commB ? "Whisper to note" : "Whisper record";
           b.classList.remove("btn-recording");
         }
       }
@@ -976,7 +985,7 @@
         }
       } else {
         if (commBtn) {
-          commBtn.textContent = "Voice to tip";
+          commBtn.textContent = "Voice to note";
           commBtn.classList.remove("btn-recording");
           if (mainB) {
             mainB.disabled = false;
@@ -1031,11 +1040,21 @@
       wrap.className = "source-chips";
       const src = data.sources || [];
       for (const s of src.slice(0, 12)) {
-        const chip = document.createElement("span");
-        chip.className = "source-chip";
         const sc = Number(s.score);
         const scoreStr = Number.isFinite(sc) ? sc.toFixed(2) : String(s.score ?? "");
-        chip.textContent = `p.${s.page} · ${scoreStr}`;
+        const label = `p.${s.page} · ${scoreStr}`;
+        const p = Number(s.page);
+        const pdfOk = !!(data && data.manual_pdf_available);
+        const hasPage = pdfOk && Number.isFinite(p) && p >= 1;
+        const chip = document.createElement(hasPage ? "a" : "span");
+        chip.className = "source-chip" + (hasPage ? " source-chip-link" : "");
+        if (hasPage) {
+          chip.href = `/api/manual#page=${Math.floor(p)}`;
+          chip.target = "_blank";
+          chip.rel = "noopener noreferrer";
+          chip.title = `Open manual PDF at page ${Math.floor(p)}`;
+        }
+        chip.textContent = label;
         wrap.appendChild(chip);
       }
       if (wrap.children.length) metaEl.appendChild(wrap);
@@ -1062,7 +1081,7 @@
       const toggle = document.createElement("button");
       toggle.type = "button";
       toggle.className = "community-save-toggle";
-      toggle.textContent = "Save a tip for others (community)";
+      toggle.textContent = "Save a field note for others (community)";
       const panel = document.createElement("div");
       panel.className = "community-save-panel";
       panel.setAttribute("aria-hidden", "true");
@@ -1073,13 +1092,13 @@
       authorInp.placeholder = "Your name (optional)";
       authorInp.maxLength = 120;
       const commentTa = document.createElement("textarea");
-      commentTa.placeholder = "How you solved it or what worked for you (required)";
+      commentTa.placeholder = "How you solved it or what worked in the field (required)";
       commentTa.maxLength = 4000;
       commentTa.rows = 2;
       const saveBtn = document.createElement("button");
       saveBtn.type = "button";
       saveBtn.className = "btn-secondary";
-      saveBtn.textContent = "Save tip";
+      saveBtn.textContent = "Save note";
       toggle.addEventListener("click", () => {
         const open = !panel.classList.contains("open");
         panel.classList.toggle("open", open);
@@ -1089,7 +1108,7 @@
       saveBtn.addEventListener("click", async () => {
         const comment = commentTa.value.trim();
         if (!comment) {
-          st.textContent = "Please enter a tip in the text box.";
+          st.textContent = "Please enter a note in the text box.";
           st.className = "community-save-status err";
           return;
         }
@@ -1134,7 +1153,7 @@
       const lblA = document.createElement("label");
       lblA.textContent = "Name";
       const lblC = document.createElement("label");
-      lblC.textContent = "Your tip";
+      lblC.textContent = "Your field note";
       const ctxSummary = document.createElement("div");
       ctxSummary.className = "community-save-context";
       const ctxHead = document.createElement("strong");
@@ -1161,21 +1180,21 @@
       const voiceHint = document.createElement("p");
       voiceHint.style.cssText = "font-size:0.72rem;color:var(--muted);margin:0;";
       voiceHint.textContent =
-        "Fill the tip by typing or use browser voice / Whisper (same EN/IT language as the bar above).";
+        "Fill the note by typing or use browser voice / Whisper (same EN/IT language as the bar above).";
       const voiceRow = document.createElement("div");
       voiceRow.className = "community-voice-row";
       const btnCommStt = document.createElement("button");
       btnCommStt.type = "button";
       btnCommStt.className = "btn-secondary btn-community-stt";
-      btnCommStt.textContent = "Voice to tip";
+      btnCommStt.textContent = "Voice to note";
       btnCommStt.disabled = !SpeechRecognition;
-      btnCommStt.title = "Browser speech-to-text into the tip box";
+      btnCommStt.title = "Browser speech-to-text into the note box";
       const btnCommWhisper = document.createElement("button");
       btnCommWhisper.type = "button";
       btnCommWhisper.className = "btn-secondary btn-community-whisper";
-      btnCommWhisper.textContent = "Whisper to tip";
+      btnCommWhisper.textContent = "Whisper to note";
       btnCommWhisper.disabled = !(serverWhisperAvailable && typeof MediaRecorder !== "undefined");
-      btnCommWhisper.title = "Record audio; server transcribes into the tip box";
+      btnCommWhisper.title = "Record audio; server transcribes into the note box";
       btnCommStt.addEventListener("click", () => {
         if (!stt) return;
         if (!sttActive) {
@@ -1283,7 +1302,7 @@
             const cur = ctx.textarea.value.trimEnd();
             ctx.textarea.value = cur ? `${cur} ${sttTranscript}` : sttTranscript;
             if (ctx.statusEl) {
-              ctx.statusEl.textContent = "Voice added to tip — edit if needed, then Save tip.";
+              ctx.statusEl.textContent = "Voice added to note — edit if needed, then Save note.";
               ctx.statusEl.className = "community-save-status ok";
             }
           } else {
@@ -1320,7 +1339,7 @@
         const r = await fetch("/api/status");
         const j = await r.json();
         const rc = j.recipe_catalog_loaded
-          ? ` · recipes ${j.recipe_count} (${j.recipe_index_backend || "?"})`
+          ? ` · structured index ${j.recipe_count} (${j.recipe_index_backend || "?"})`
           : "";
         serverCommunityEnabled = !!j.community_enabled;
         serverWhisperAvailable = !!j.whisper_stt_available;
@@ -1328,11 +1347,11 @@
         setCommunityWhisperButtonsEnabled(true);
         setCommunitySttButtonsEnabled(true);
         const ct = serverCommunityEnabled
-          ? ` · community tips ${j.community_tips != null ? j.community_tips : 0}`
+          ? ` · community notes ${j.community_tips != null ? j.community_tips : 0}`
           : "";
         const wz = serverWhisperAvailable ? " · whisper STT" : "";
         $("srvStatus").textContent = j.loaded
-          ? `Index ready: ${j.chunks} chunks from ${j.source_file || "unknown"} · embed ${j.embed_model} · chat ${j.chat_model}${rc}${ct}${wz}`
+          ? `Index ready: ${j.chunks} chunks from ${j.source_file || "unknown"} · embed ${j.embed_model} · assistant ${j.chat_model}${rc}${ct}${wz}`
           : "No manual loaded yet — upload a PDF.";
         $("srvStatus").className = "status " + (j.loaded ? "ok" : "");
       } catch (e) {
@@ -1591,7 +1610,7 @@
             const transcribed = String(j.text != null ? j.text : "").trim();
             if (!transcribed) {
               statusLine(
-                "Whisper returned no text (often: mic too quiet, very short clip, or wrong Voice language). Try again — or toggle EN/IT, speak longer, or use Voice to tip.",
+                "Whisper returned no text (often: mic too quiet, very short clip, or wrong Voice language). Try again — or toggle EN/IT, speak longer, or use Voice to note.",
                 "err",
               );
               return;
@@ -1602,8 +1621,8 @@
               stopCtx.textarea.focus();
               statusLine(
                 j.backend
-                  ? `Transcribed (${j.backend}). Edit if needed, then Save tip.`
-                  : "Transcribed. Edit if needed, then Save tip.",
+                  ? `Transcribed (${j.backend}). Edit if needed, then Save note.`
+                  : "Transcribed. Edit if needed, then Save note.",
                 "ok",
               );
             } else {
