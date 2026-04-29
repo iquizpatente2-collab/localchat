@@ -4,8 +4,21 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Manual Assistant (local RAG)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&family=Exo+2:wght@300;400;500;600&display=swap"
+    rel="stylesheet"
+  />
   <style>
     :root {
+      --bg: #f4f5f9;
+      --panel: #ffffff;
+      --text: #1f2230;
+      --muted: #666d7d;
+      --accent: #7a2fa0;
+      --border: #d9dce4;
+    }
+    body[data-theme="dark"] {
       --bg: #0f1419;
       --panel: #1a2332;
       --text: #e7ecf3;
@@ -49,19 +62,119 @@
       padding: 0.75rem 0.9rem;
       border: 1px solid var(--border);
       border-radius: 10px;
-      background: #121a26;
+      background: var(--panel);
     }
     .topbar-left { display: flex; flex-direction: column; gap: 0.12rem; }
-    .status-pill {
+    .topbar-head {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      flex-wrap: wrap;
+    }
+    .btn-theme {
+      margin-left: 0;
+      margin-top: 0;
+      padding: 0.34rem 0.62rem;
+      font-size: 0.76rem;
+      border-radius: 999px;
+      background: #ebe6f2;
+      color: #4b2763;
+      border: 1px solid #d7cae7;
+    }
+    .lang-select {
+      margin-left: 0;
+      margin-top: 0;
+      padding: 0.34rem 0.55rem;
+      font-size: 0.76rem;
+      border-radius: 999px;
+      background: #ebe6f2;
+      color: #4b2763;
+      border: 1px solid #d7cae7;
+    }
+    body[data-theme="dark"] .btn-theme {
+      background: #273448;
+      border-color: #334662;
+      color: #dce7fb;
+    }
+    body[data-theme="dark"] .lang-select {
+      background: #273448;
+      border-color: #334662;
+      color: #dce7fb;
+    }
+    .composer-model-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.45rem;
+      flex-wrap: wrap;
+    }
+    .composer-model-row .model-label {
       font-size: 0.78rem;
       color: var(--muted);
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      padding: 0.28rem 0.6rem;
       white-space: nowrap;
-      max-width: 52ch;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      min-width: 74px;
+    }
+    .composer-model-row .model-select {
+      margin-left: 0;
+      min-width: 220px;
+      max-width: 100%;
+      flex: 1 1 260px;
+      font-size: 0.82rem;
+      padding: 0.35rem 0.5rem;
+    }
+    .status-menu {
+      position: relative;
+      margin-left: auto;
+      flex: 0 0 auto;
+    }
+    .status-dot-btn {
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      border: 1px solid #4a5566;
+      background: #5b6372;
+      box-shadow: 0 0 0 2px rgba(9, 12, 18, 0.35);
+      cursor: pointer;
+      padding: 0;
+    }
+    .status-dot-btn.status-ready {
+      background: #2dcf73;
+      border-color: #1b9d52;
+      box-shadow: 0 0 0 2px rgba(45, 207, 115, 0.15);
+    }
+    .status-dot-btn.status-error {
+      background: #d15d64;
+      border-color: #a7464d;
+      box-shadow: 0 0 0 2px rgba(209, 93, 100, 0.14);
+    }
+    .status-popover {
+      position: absolute;
+      top: calc(100% + 10px);
+      right: 0;
+      z-index: 20;
+      min-width: min(78vw, 620px);
+      max-width: min(90vw, 760px);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--panel);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+      padding: 0.55rem 0.65rem;
+      display: none;
+    }
+    .status-popover.open {
+      display: block;
+    }
+    .status-popover .status-text {
+      font-size: 0.76rem;
+      color: var(--muted);
+      line-height: 1.35;
+      word-break: break-word;
+    }
+    .status-popover .status-text.ok {
+      color: #7ddba2;
+    }
+    .status-popover .status-text.err {
+      color: #f2a3a8;
     }
     .panel {
       background: var(--panel);
@@ -90,8 +203,18 @@
     }
     .chat-toolbar {
       display: flex;
-      justify-content: flex-end;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.6rem;
       flex-shrink: 0;
+    }
+    .chat-model-indicator {
+      font-size: 0.8rem;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: min(64%, 36ch);
     }
     .chat-toolbar button {
       margin-top: 0;
@@ -109,7 +232,7 @@
       gap: 0.85rem;
     }
     .chat-messages:empty::before {
-      content: "Ask about your manual below — each question and answer appears here.";
+      content: var(--chat-empty-text, "Ask about your manual below - each question and answer appears here.");
       color: var(--muted);
       font-size: 0.88rem;
       line-height: 1.45;
@@ -134,12 +257,13 @@
     .bubble-user {
       background: #1e3a5f;
       border: 1px solid #2a4a72;
-      color: var(--text);
+      color: #eaf2ff;
       border-bottom-right-radius: 4px;
     }
     .bubble-assistant {
       background: #101722;
       border: 1px solid var(--border);
+      color: #dfe7f3;
       white-space: pre-wrap;
       border-bottom-left-radius: 4px;
     }
@@ -417,6 +541,15 @@
       font-size: 0.78rem;
       color: #6a7686;
     }
+    @media (min-width: 721px) {
+      body[data-lang="it"]:not([data-theme="blueprint"]) #lblAskManual {
+        white-space: nowrap;
+        font-size: 0.8rem;
+      }
+      body[data-lang="it"]:not([data-theme="blueprint"]) #lblKbdHint {
+        font-size: 0.72rem;
+      }
+    }
     input[type="file"] {
       width: 100%;
       padding: 0.5rem;
@@ -433,17 +566,49 @@
     button {
       background: var(--accent);
       color: #fff;
-      border: none;
+      border: 1px solid transparent;
       padding: 0.55rem 1rem;
-      border-radius: 6px;
+      border-radius: 8px;
       font-size: 0.9rem;
       cursor: pointer;
       margin-top: 0;
+      font-weight: 600;
+      transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+    }
+    button:hover:not(:disabled) {
+      filter: brightness(0.96);
+    }
+    button:focus-visible {
+      outline: 2px solid color-mix(in srgb, var(--accent) 55%, #ffffff 45%);
+      outline-offset: 2px;
     }
     .btn-secondary {
-      background: #2a3544;
-      color: var(--text);
+      background: #eef1f6;
+      color: #1f2633;
+      border-color: #ccd3df;
       margin-left: 0.45rem;
+    }
+    .btn-secondary:hover:not(:disabled) {
+      background: #e5eaf2;
+      border-color: #bec8d7;
+      filter: none;
+    }
+    body[data-theme="dark"] .btn-secondary {
+      background: #2a3544;
+      color: #dce5f2;
+      border-color: #36465c;
+    }
+    body[data-theme="dark"] .btn-secondary:hover:not(:disabled) {
+      background: #334257;
+      border-color: #455773;
+    }
+    .btn-danger {
+      background: #5b2327;
+      color: #ffd6d9;
+      border: 1px solid #8a3a40;
+    }
+    .btn-danger:hover {
+      background: #6e2a2f;
     }
     .btn-recording {
       background: #b94a48;
@@ -458,7 +623,18 @@
       margin-left: 0.45rem;
       margin-top: 0;
     }
-    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    button:disabled {
+      opacity: 0.62;
+      cursor: not-allowed;
+      color: #5f6675;
+      border-color: #cfd4de;
+      background: #eceff4;
+    }
+    body[data-theme="dark"] button:disabled {
+      color: #8b98a8;
+      border-color: #3a485d;
+      background: #2b3341;
+    }
     textarea {
       width: 100%;
       min-height: 100px;
@@ -487,6 +663,85 @@
       font-size: 0.85rem;
       color: var(--muted);
       margin-top: 0.5rem;
+    }
+    .community-admin {
+      margin-top: 0.55rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #f1f3f8;
+      overflow: hidden;
+    }
+    .community-admin summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 0.5rem 0.65rem;
+      font-size: 0.8rem;
+      color: #1f2633;
+      user-select: none;
+      border-bottom: 1px solid transparent;
+      background: #e9edf4;
+    }
+    .community-admin[open] summary {
+      border-bottom-color: var(--border);
+      background: #e2e8f2;
+    }
+    .community-admin summary::-webkit-details-marker { display: none; }
+    .community-admin-body {
+      padding: 0.55rem 0.65rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+    }
+    .community-admin-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      flex-wrap: wrap;
+    }
+    .community-admin-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+      max-height: 240px;
+      overflow: auto;
+    }
+    .community-admin-item {
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: #ffffff;
+      padding: 0.45rem 0.55rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.28rem;
+    }
+    .community-admin-item-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.45rem;
+    }
+    .community-admin-meta {
+      font-size: 0.72rem;
+      color: var(--muted);
+      line-height: 1.3;
+    }
+    .community-admin-question {
+      font-size: 0.78rem;
+      color: var(--text);
+      line-height: 1.35;
+    }
+    body[data-theme="dark"] .community-admin {
+      background: #111822;
+    }
+    body[data-theme="dark"] .community-admin summary {
+      color: var(--text);
+      background: #101723;
+    }
+    body[data-theme="dark"] .community-admin[open] summary {
+      background: #131d2a;
+    }
+    body[data-theme="dark"] .community-admin-item {
+      background: #0f1620;
     }
     .status.ok { color: #5bd37a; }
     .status.err {
@@ -663,6 +918,28 @@
         min-width: 0;
         flex-shrink: 0;
       }
+      .topbar-head {
+        gap: 0.3rem;
+      }
+      .btn-theme {
+        font-size: 0.72rem;
+        padding: 0.3rem 0.52rem;
+      }
+      .composer-model-row {
+        margin-bottom: 0.38rem;
+        gap: 0.35rem;
+      }
+      .composer-model-row .model-label {
+        font-size: 0.72rem;
+        min-width: 0;
+      }
+      .composer-model-row .model-select {
+        min-width: 0;
+        width: 100%;
+        max-width: none;
+        flex: 1 1 100%;
+        font-size: 0.78rem;
+      }
       h1 {
         font-size: 0.98rem;
         margin: 0 0 0.1rem 0;
@@ -671,22 +948,14 @@
       .sub {
         display: none;
       }
-      .status-pill {
-        flex: 1 1 100%;
-        order: 3;
-        max-width: none;
-        white-space: normal;
-        border-radius: 6px;
-        font-size: 0.65rem;
-        line-height: 1.3;
-        word-break: break-word;
-        padding: 0.32rem 0.5rem;
-        max-height: 3.6em;
-        overflow: hidden;
-        display: -webkit-box;
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: 3;
-        line-clamp: 3;
+      .status-menu {
+        order: 2;
+        margin-left: 0;
+      }
+      .status-popover {
+        right: auto;
+        left: 0;
+        min-width: min(92vw, 520px);
       }
       .kbd-hint {
         display: none;
@@ -826,23 +1095,71 @@
         margin-top: 0.4rem;
       }
     }
+
   </style>
+  <link rel="stylesheet" href="/static/themes.css" />
 </head>
 <body>
+  <div class="theme-blueprint-deco" aria-hidden="true">
+    <svg class="bp-bg-watermark" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+      <path
+        d="M87 4h26l4 19a77 77 0 0 1 16 7l17-9 18 18-9 17a77 77 0 0 1 7 16l19 4v26l-19 4a77 77 0 0 1-7 16l9 17-18 18-17-9a77 77 0 0 1-16 7l-4 19H87l-4-19a77 77 0 0 1-16-7l-17 9-18-18 9-17a77 77 0 0 1-7-16L4 113V87l19-4a77 77 0 0 1 7-16L21 50 39 32l17 9a77 77 0 0 1 16-7L87 4z"
+        fill="none"
+        stroke="#38bdf8"
+        stroke-width="3"
+      />
+      <circle cx="100" cy="100" r="34" fill="none" stroke="#38bdf8" stroke-width="3" />
+      <circle cx="100" cy="100" r="12" fill="none" stroke="#38bdf8" stroke-width="2" />
+      <line x1="100" y1="66" x2="100" y2="55" stroke="#38bdf8" stroke-width="2" />
+      <line x1="100" y1="134" x2="100" y2="145" stroke="#38bdf8" stroke-width="2" />
+      <line x1="66" y1="100" x2="55" y2="100" stroke="#38bdf8" stroke-width="2" />
+      <line x1="134" y1="100" x2="145" y2="100" stroke="#38bdf8" stroke-width="2" />
+    </svg>
+    <svg class="bp-bg-watermark-2" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+      <path
+        d="M87 4h26l4 19a77 77 0 0 1 16 7l17-9 18 18-9 17a77 77 0 0 1 7 16l19 4v26l-19 4a77 77 0 0 1-7 16l9 17-18 18-17-9a77 77 0 0 1-16 7l-4 19H87l-4-19a77 77 0 0 1-16-7l-17 9-18-18 9-17a77 77 0 0 1-7-16L4 113V87l19-4a77 77 0 0 1 7-16L21 50 39 32l17 9a77 77 0 0 1 16-7L87 4z"
+        fill="none"
+        stroke="#38bdf8"
+        stroke-width="3"
+      />
+      <circle cx="100" cy="100" r="34" fill="none" stroke="#38bdf8" stroke-width="3" />
+    </svg>
+  </div>
   <div class="wrap">
     <div class="topbar">
       <div class="topbar-left">
-        <h1>Manual Q&amp;A (local)</h1>
-        <p class="sub">Ask questions grounded in your indexed PDF.</p>
+        <div class="topbar-head">
+          <h1>Manual Q&amp;A (local)</h1>
+          <button type="button" id="btnTheme" class="btn-theme" title="Switch theme">Theme: Light</button>
+          <select id="uiLang" class="lang-select" title="Interface language">
+            <option value="en">English</option>
+            <option value="it">Italiano</option>
+          </select>
+        </div>
+        <p class="sub" id="lblSub">Ask questions grounded in your indexed PDF.</p>
       </div>
-      <div class="status-pill" id="srvStatus">Loading…</div>
+      <div class="status-menu" id="srvStatusMenu">
+        <button
+          type="button"
+          id="srvStatusDot"
+          class="status-dot-btn"
+          title="Server status"
+          aria-label="Server status"
+          aria-haspopup="true"
+          aria-expanded="false"
+        ></button>
+        <div class="status-popover" id="srvStatusPopover" role="dialog" aria-live="polite">
+          <div class="status-text" id="srvStatus">Loading…</div>
+        </div>
+      </div>
     </div>
 
     <div class="chat-area">
       <div class="conversation" id="chatScroll" role="log" aria-live="polite" aria-relevant="additions">
         <div class="chat-toolbar">
+          <span id="chatModelIndicator" class="chat-model-indicator"></span>
           <button type="button" id="btnClearChat" class="btn-secondary" title="Remove all messages from this view">
-            <span class="clear-label-desktop">Clear conversation</span><span class="clear-label-mobile">Clear</span>
+            <span class="clear-label-desktop" id="lblClearDesktop">Clear conversation</span><span class="clear-label-mobile" id="lblClearMobile">Clear</span>
           </button>
         </div>
         <div class="status" id="chatStatus"></div>
@@ -862,7 +1179,11 @@
           <span class="composer-toggle-label">Hide search</span>
         </button>
         <div class="composer-body" id="composerBody">
-          <label>Ask about the manual <span class="kbd-hint">Enter to send · Shift+Enter newline</span><span class="kbd-hint-mobile">Tap Ask to send</span></label>
+          <label id="lblAskManual">Ask about the manual <span class="kbd-hint" id="lblKbdHint">Enter to send · Shift+Enter newline</span><span class="kbd-hint-mobile" id="lblKbdHintMobile">Tap Ask to send</span></label>
+          <div class="composer-model-row">
+            <label for="chatModel" class="model-label">Chat model</label>
+            <select id="chatModel" class="model-select" title="Select Ollama chat model"></select>
+          </div>
           <textarea id="q" placeholder="e.g. alarm E12 causes, lubrication interval, reset sequence after overload"></textarea>
           <div class="composer-controls">
             <div class="control-row control-row-primary">
@@ -878,14 +1199,24 @@
             </div>
             <details class="pdf-drawer" open>
               <summary class="pdf-drawer-summary">
-                <span class="pdf-drawer-title"><span class="pdf-drawer-chevron"></span> PDF &amp; index</span>
-                <span class="pdf-drawer-hint">Upload · ingest · docs folder</span>
+                <span class="pdf-drawer-title" id="lblPdfTitle"><span class="pdf-drawer-chevron"></span> PDF &amp; index</span>
+                <span class="pdf-drawer-hint" id="lblPdfHint">Upload · ingest · docs folder</span>
               </summary>
               <div class="control-row control-row-pdf">
                 <input type="file" id="pdf" class="file-inline" accept=".pdf,application/pdf" title="Select PDF manual" />
                 <button type="button" id="btnUpload">Ingest manual</button>
                 <button type="button" id="btnUseDocs" class="btn-secondary">Use docs PDF</button>
                 <button type="button" id="btnRemoveUpload" class="btn-secondary">Remove uploaded PDF</button>
+              </div>
+            </details>
+            <details class="community-admin" id="communityAdmin" style="display:none;">
+              <summary id="lblCommunitySummary">Manage community notes</summary>
+              <div class="community-admin-body">
+                <div class="community-admin-toolbar">
+                  <button type="button" id="btnCommunityRefresh" class="btn-secondary">Refresh notes</button>
+                  <span class="status" id="communityAdminStatus"></span>
+                </div>
+                <div id="communityAdminList" class="community-admin-list"></div>
               </div>
             </details>
           </div>
@@ -900,7 +1231,12 @@
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     /** Prior turns for /api/chat (user/assistant pairs); capped client-side. */
     const CHAT_HISTORY_MAX_MESSAGES = 12;
+    const THEME_STORAGE_KEY = "localchat.theme";
+    const LANG_STORAGE_KEY = "localchat.lang";
     let chatHistory = [];
+    let currentChatModel = "";
+    let currentTheme = "light";
+    let currentLang = "en";
     let serverCommunityEnabled = false;
     let serverWhisperAvailable = false;
     let stt = null;
@@ -916,6 +1252,270 @@
     let whisperMimeType = "";
     /** null = main chat; same shape as sttContext for community */
     let whisperContext = null;
+    let statusPopoverOpen = false;
+
+    const I18N = {
+      en: {
+        title: "Manual Q&A (local)",
+        sub: "Ask questions grounded in your indexed PDF.",
+        themeLight: "Theme: Light",
+        themeDark: "Theme: Dark",
+        themeBlueprint: "Theme: Blueprint",
+        askLabel: "Ask about the manual",
+        kbdHint: "Enter to send · Shift+Enter newline",
+        kbdHintMobile: "Tap Ask to send",
+        clearDesktop: "Clear conversation",
+        clearMobile: "Clear",
+        askBtn: "Ask",
+        startVoice: "Start voice",
+        stopVoice: "Stop voice",
+        whisperRecord: "Whisper record",
+        stopAndSend: "Stop & send",
+        whisperToNote: "Whisper to note",
+        voiceToNote: "Voice to note",
+        pdfTitle: "PDF & index",
+        pdfHint: "Upload · ingest · docs folder",
+        ingestManual: "Ingest manual",
+        useDocsPdf: "Use docs PDF",
+        removeUpload: "Remove uploaded PDF",
+        manageCommunity: "Manage community notes",
+        refreshNotes: "Refresh notes",
+        qPlaceholder: "e.g. alarm E12 causes, lubrication interval, reset sequence after overload",
+        voiceEnglish: "Voice: English",
+        voiceItalian: "Voice: Italiano",
+        chatEmpty: "Ask about your manual below - each question and answer appears here.",
+        modelSetTo: "Chat model set to",
+      },
+      it: {
+        title: "Domande e Risposte Manuale (locale)",
+        sub: "Fai domande basate sul tuo PDF indicizzato.",
+        themeLight: "Tema: Chiaro",
+        themeDark: "Tema: Scuro",
+        themeBlueprint: "Tema: Blueprint",
+        askLabel: "Fai una domanda sul manuale",
+        kbdHint: "Invio per inviare · Shift+Invio nuova riga",
+        kbdHintMobile: "Tocca Chiedi per inviare",
+        clearDesktop: "Cancella conversazione",
+        clearMobile: "Cancella",
+        askBtn: "Chiedi",
+        startVoice: "Avvia voce",
+        stopVoice: "Ferma voce",
+        whisperRecord: "Registra Whisper",
+        stopAndSend: "Ferma e invia",
+        whisperToNote: "Whisper per nota",
+        voiceToNote: "Voce per nota",
+        pdfTitle: "PDF e indice",
+        pdfHint: "Carica · indicizza · cartella docs",
+        ingestManual: "Indicizza manuale",
+        useDocsPdf: "Usa PDF docs",
+        removeUpload: "Rimuovi PDF caricato",
+        manageCommunity: "Gestisci note community",
+        refreshNotes: "Aggiorna note",
+        qPlaceholder: "es. cause allarme E12, intervallo lubrificazione, sequenza reset dopo sovraccarico",
+        voiceEnglish: "Voce: Inglese",
+        voiceItalian: "Voce: Italiano",
+        chatEmpty: "Fai una domanda sul manuale qui sotto - ogni domanda e risposta appare qui.",
+        modelSetTo: "Modello chat impostato su",
+      },
+    };
+
+    function t(key) {
+      return (I18N[currentLang] && I18N[currentLang][key]) || I18N.en[key] || key;
+    }
+
+    function updateModelIndicator() {
+      const el = $("chatModelIndicator");
+      if (!el) return;
+      const m = String(currentChatModel || "").trim();
+      el.textContent = m ? `${t("modelSetTo")} ${m}` : "";
+      el.title = el.textContent;
+    }
+
+    function setServerStatus(text, tone) {
+      const txt = $("srvStatus");
+      const dot = $("srvStatusDot");
+      if (!txt || !dot) return;
+      txt.textContent = text;
+      txt.className = "status-text" + (tone === "ok" ? " ok" : tone === "err" ? " err" : "");
+      dot.classList.toggle("status-ready", tone === "ok");
+      dot.classList.toggle("status-error", tone === "err");
+    }
+
+    function applyTheme(theme) {
+      const normalized =
+        theme === "dark" ? "dark" : theme === "blueprint" ? "blueprint" : "light";
+      currentTheme = normalized;
+      document.body.setAttribute("data-theme", normalized);
+      updateThemeButtonLabel();
+      try {
+        localStorage.setItem(THEME_STORAGE_KEY, normalized);
+      } catch (_) {}
+    }
+
+    function updateThemeButtonLabel() {
+      const b = $("btnTheme");
+      const labels = { light: t("themeLight"), dark: t("themeDark"), blueprint: t("themeBlueprint") };
+      if (b) b.textContent = labels[currentTheme] || t("themeLight");
+    }
+
+    function applyLanguage(lang) {
+      const normalized = lang === "it" ? "it" : "en";
+      currentLang = normalized;
+      document.body.setAttribute("data-lang", normalized);
+      const langSel = $("uiLang");
+      if (langSel) langSel.value = normalized;
+
+      const titleEl = document.querySelector("h1");
+      if (titleEl) titleEl.textContent = t("title");
+      if ($("lblSub")) $("lblSub").textContent = t("sub");
+      if ($("lblClearDesktop")) $("lblClearDesktop").textContent = t("clearDesktop");
+      if ($("lblClearMobile")) $("lblClearMobile").textContent = t("clearMobile");
+      if ($("lblAskManual")) {
+        $("lblAskManual").childNodes[0].nodeValue = `${t("askLabel")} `;
+      }
+      if ($("lblKbdHint")) $("lblKbdHint").textContent = t("kbdHint");
+      if ($("lblKbdHintMobile")) $("lblKbdHintMobile").textContent = t("kbdHintMobile");
+      if ($("btnAsk")) $("btnAsk").textContent = t("askBtn");
+      if ($("btnStt") && !sttActive) $("btnStt").textContent = t("startVoice");
+      if ($("btnWhisper")) $("btnWhisper").textContent = t("whisperRecord");
+      if ($("lblPdfTitle")) $("lblPdfTitle").innerHTML = '<span class="pdf-drawer-chevron"></span> ' + t("pdfTitle");
+      if ($("lblPdfHint")) $("lblPdfHint").textContent = t("pdfHint");
+      if ($("btnUpload")) $("btnUpload").textContent = t("ingestManual");
+      if ($("btnUseDocs")) $("btnUseDocs").textContent = t("useDocsPdf");
+      if ($("btnRemoveUpload")) $("btnRemoveUpload").textContent = t("removeUpload");
+      if ($("lblCommunitySummary")) $("lblCommunitySummary").textContent = t("manageCommunity");
+      if ($("btnCommunityRefresh")) $("btnCommunityRefresh").textContent = t("refreshNotes");
+      if ($("q")) $("q").placeholder = t("qPlaceholder");
+      if ($("sttLang")) {
+        const opts = $("sttLang").options;
+        if (opts[0]) opts[0].textContent = t("voiceEnglish");
+        if (opts[1]) opts[1].textContent = t("voiceItalian");
+      }
+      document.body.style.setProperty("--chat-empty-text", `"${t("chatEmpty")}"`);
+      updateThemeButtonLabel();
+      updateModelIndicator();
+
+      try {
+        localStorage.setItem(LANG_STORAGE_KEY, normalized);
+      } catch (_) {}
+    }
+
+    function initLanguage() {
+      let saved = "";
+      try {
+        saved = (localStorage.getItem(LANG_STORAGE_KEY) || "").trim().toLowerCase();
+      } catch (_) {}
+      applyLanguage(saved === "it" ? "it" : "en");
+    }
+
+    function initTheme() {
+      let saved = "";
+      try {
+        saved = (localStorage.getItem(THEME_STORAGE_KEY) || "").trim().toLowerCase();
+      } catch (_) {}
+      if (saved === "dark") applyTheme("dark");
+      else if (saved === "blueprint") applyTheme("blueprint");
+      else applyTheme("light");
+    }
+
+    function fmtTime(ts) {
+      if (!ts) return "unknown time";
+      try {
+        return new Date(Number(ts) * 1000).toLocaleString();
+      } catch (_) {
+        return "unknown time";
+      }
+    }
+
+    async function refreshCommunityAdminList() {
+      const box = $("communityAdmin");
+      const list = $("communityAdminList");
+      const st = $("communityAdminStatus");
+      if (!box || !list || !st || !serverCommunityEnabled) return;
+      st.textContent = "Loading…";
+      st.className = "status";
+      try {
+        const r = await fetch("/api/community?limit=200");
+        const raw = await r.text();
+        let j = {};
+        try { j = raw ? JSON.parse(raw) : {}; } catch (_) {}
+        if (!r.ok) {
+          const detail = j.detail !== undefined ? (typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail)) : (raw || r.statusText);
+          throw new Error(detail);
+        }
+        const items = Array.isArray(j.items) ? j.items : [];
+        list.innerHTML = "";
+        if (!items.length) {
+          const empty = document.createElement("div");
+          empty.className = "community-admin-meta";
+          empty.textContent = "No community notes saved yet.";
+          list.appendChild(empty);
+        } else {
+          for (const it of items) {
+            const row = document.createElement("div");
+            row.className = "community-admin-item";
+            const head = document.createElement("div");
+            head.className = "community-admin-item-head";
+            const meta = document.createElement("div");
+            meta.className = "community-admin-meta";
+            meta.textContent = `${it.author || "Anonymous"} · ${fmtTime(it.saved_ts)} · id ${it.id || ""}`;
+            const del = document.createElement("button");
+            del.type = "button";
+            del.className = "btn-secondary btn-danger";
+            del.textContent = "Delete";
+            del.style.marginLeft = "0";
+            del.onclick = async () => {
+              if (!it.id) return;
+              if (!window.confirm("Delete this community note?")) return;
+              del.disabled = true;
+              try {
+                const rr = await fetch(`/api/community/${encodeURIComponent(it.id)}`, { method: "DELETE" });
+                const body = await rr.text();
+                let jj = {};
+                try { jj = body ? JSON.parse(body) : {}; } catch (_) {}
+                if (!rr.ok) {
+                  const detail = jj.detail !== undefined ? (typeof jj.detail === "string" ? jj.detail : JSON.stringify(jj.detail)) : (body || rr.statusText);
+                  throw new Error(detail);
+                }
+                row.remove();
+                st.textContent = "Deleted note.";
+                st.className = "status ok";
+              } catch (e) {
+                st.textContent = String(e.message || e);
+                st.className = "status err";
+                del.disabled = false;
+              }
+            };
+            head.appendChild(meta);
+            head.appendChild(del);
+            const q = document.createElement("div");
+            q.className = "community-admin-question";
+            q.textContent = `Q: ${(it.question || "").trim().slice(0, 220) || "(empty)"}`;
+            const c = document.createElement("div");
+            c.className = "community-admin-meta";
+            c.textContent = `Note: ${(it.comment || "").trim().slice(0, 260) || "(empty)"}`;
+            row.appendChild(head);
+            row.appendChild(q);
+            row.appendChild(c);
+            list.appendChild(row);
+          }
+        }
+        st.textContent = `${items.length} note(s) loaded`;
+        st.className = "status ok";
+      } catch (e) {
+        st.textContent = String(e.message || e);
+        st.className = "status err";
+      }
+    }
+
+    function toggleStatusPopover(forceOpen) {
+      const pop = $("srvStatusPopover");
+      const dot = $("srvStatusDot");
+      if (!pop || !dot) return;
+      statusPopoverOpen = typeof forceOpen === "boolean" ? forceOpen : !statusPopoverOpen;
+      pop.classList.toggle("open", statusPopoverOpen);
+      dot.setAttribute("aria-expanded", statusPopoverOpen ? "true" : "false");
+    }
 
     function pickWhisperMime() {
       const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
@@ -933,10 +1533,10 @@
       const targets = commB ? [commB] : mainB ? [mainB] : [];
       for (const b of targets) {
         if (recording) {
-          b.textContent = "Stop & send";
+          b.textContent = t("stopAndSend");
           b.classList.add("btn-recording");
         } else {
-          b.textContent = commB ? "Whisper to note" : "Whisper record";
+          b.textContent = commB ? t("whisperToNote") : t("whisperRecord");
           b.classList.remove("btn-recording");
         }
       }
@@ -966,14 +1566,14 @@
       const commBtn = sttContext && sttContext.voiceBtn;
       if (active) {
         if (commBtn) {
-          commBtn.textContent = "Stop voice";
+          commBtn.textContent = t("stopVoice");
           commBtn.classList.add("btn-recording");
           if (mainB) {
             mainB.disabled = true;
             mainB.title = "Finish community voice first";
           }
         } else if (mainB) {
-          mainB.textContent = "Stop voice";
+          mainB.textContent = t("stopVoice");
           mainB.classList.add("btn-recording");
         }
         if (sttContext && sttContext.type === "community" && sttContext.statusEl) {
@@ -985,14 +1585,14 @@
         }
       } else {
         if (commBtn) {
-          commBtn.textContent = "Voice to note";
+          commBtn.textContent = t("voiceToNote");
           commBtn.classList.remove("btn-recording");
           if (mainB) {
             mainB.disabled = false;
             mainB.title = "";
           }
         } else if (mainB) {
-          mainB.textContent = "Start voice";
+          mainB.textContent = t("startVoice");
           mainB.classList.remove("btn-recording");
         }
       }
@@ -1078,6 +1678,7 @@
     function setupCommunitySaveUI(slot, questionText, answerText) {
       slot.innerHTML = "";
       if (!serverCommunityEnabled) return;
+      let savedTipId = "";
       const toggle = document.createElement("button");
       toggle.type = "button";
       toggle.className = "community-save-toggle";
@@ -1099,6 +1700,11 @@
       saveBtn.type = "button";
       saveBtn.className = "btn-secondary";
       saveBtn.textContent = "Save note";
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "btn-secondary btn-danger";
+      deleteBtn.textContent = "Delete saved note";
+      deleteBtn.disabled = true;
       toggle.addEventListener("click", () => {
         const open = !panel.classList.contains("open");
         panel.classList.toggle("open", open);
@@ -1140,8 +1746,10 @@
                 : raw || r.statusText;
             throw new Error(detail);
           }
+          savedTipId = String(j.id || "").trim();
           st.textContent = "Saved — others may see this on similar questions.";
           st.className = "community-save-status ok";
+          deleteBtn.disabled = !savedTipId;
           panel.classList.remove("open");
           commentTa.value = "";
         } catch (e) {
@@ -1149,6 +1757,44 @@
           st.className = "community-save-status err";
         }
         saveBtn.disabled = false;
+      });
+      deleteBtn.addEventListener("click", async () => {
+        if (!savedTipId) {
+          st.textContent = "No saved note id found in this panel.";
+          st.className = "community-save-status err";
+          return;
+        }
+        if (!window.confirm("Delete this saved community note?")) return;
+        deleteBtn.disabled = true;
+        st.textContent = "Deleting…";
+        st.className = "community-save-status";
+        try {
+          const r = await fetch(`/api/community/${encodeURIComponent(savedTipId)}`, {
+            method: "DELETE",
+          });
+          const raw = await r.text();
+          let j = {};
+          try {
+            j = raw ? JSON.parse(raw) : {};
+          } catch (_) {}
+          if (!r.ok) {
+            const detail =
+              j.detail !== undefined
+                ? typeof j.detail === "string"
+                  ? j.detail
+                  : JSON.stringify(j.detail)
+                : raw || r.statusText;
+            throw new Error(detail);
+          }
+          savedTipId = "";
+          deleteBtn.disabled = true;
+          st.textContent = "Deleted.";
+          st.className = "community-save-status ok";
+        } catch (e) {
+          st.textContent = String(e.message || e);
+          st.className = "community-save-status err";
+          deleteBtn.disabled = false;
+        }
       });
       const lblA = document.createElement("label");
       lblA.textContent = "Name";
@@ -1186,13 +1832,13 @@
       const btnCommStt = document.createElement("button");
       btnCommStt.type = "button";
       btnCommStt.className = "btn-secondary btn-community-stt";
-      btnCommStt.textContent = "Voice to note";
+      btnCommStt.textContent = t("voiceToNote");
       btnCommStt.disabled = !SpeechRecognition;
       btnCommStt.title = "Browser speech-to-text into the note box";
       const btnCommWhisper = document.createElement("button");
       btnCommWhisper.type = "button";
       btnCommWhisper.className = "btn-secondary btn-community-whisper";
-      btnCommWhisper.textContent = "Whisper to note";
+      btnCommWhisper.textContent = t("whisperToNote");
       btnCommWhisper.disabled = !(serverWhisperAvailable && typeof MediaRecorder !== "undefined");
       btnCommWhisper.title = "Record audio; server transcribes into the note box";
       btnCommStt.addEventListener("click", () => {
@@ -1247,6 +1893,7 @@
       panel.appendChild(voiceRow);
       panel.appendChild(commentTa);
       panel.appendChild(saveBtn);
+      panel.appendChild(deleteBtn);
       panel.appendChild(st);
       slot.appendChild(toggle);
       slot.appendChild(panel);
@@ -1343,6 +1990,7 @@
           : "";
         serverCommunityEnabled = !!j.community_enabled;
         serverWhisperAvailable = !!j.whisper_stt_available;
+        $("communityAdmin").style.display = serverCommunityEnabled ? "" : "none";
         applyWhisperBtnState();
         setCommunityWhisperButtonsEnabled(true);
         setCommunitySttButtonsEnabled(true);
@@ -1350,14 +1998,51 @@
           ? ` · community notes ${j.community_tips != null ? j.community_tips : 0}`
           : "";
         const wz = serverWhisperAvailable ? " · whisper STT" : "";
-        $("srvStatus").textContent = j.loaded
+        if (!currentChatModel) {
+          currentChatModel = String(j.chat_model || "").trim();
+        }
+        setServerStatus(
+          j.loaded
           ? `Index ready: ${j.chunks} chunks from ${j.source_file || "unknown"} · embed ${j.embed_model} · assistant ${j.chat_model}${rc}${ct}${wz}`
-          : "No manual loaded yet — upload a PDF.";
-        $("srvStatus").className = "status " + (j.loaded ? "ok" : "");
+          : "No manual loaded yet — upload a PDF.",
+          j.loaded ? "ok" : ""
+        );
       } catch (e) {
-        $("srvStatus").textContent = "Could not reach /api/status";
-        $("srvStatus").className = "status err";
+        setServerStatus("Could not reach /api/status", "err");
+        $("communityAdmin").style.display = "none";
       }
+    }
+
+    async function refreshModelOptions() {
+      const sel = $("chatModel");
+      if (!sel) return;
+      const preferred = currentChatModel;
+      let models = [];
+      try {
+        const r = await fetch("/api/models");
+        const j = await r.json();
+        models = Array.isArray(j.available) ? j.available : [];
+        if (!currentChatModel) currentChatModel = String(j.default || "").trim();
+      } catch (_) {
+        // Fallback when /api/models is unavailable.
+      }
+      if (!models.length) {
+        const s = await fetch("/api/status").then((x) => x.json()).catch(() => ({}));
+        const fromStatus = Array.isArray(s.chat_model_options) ? s.chat_model_options : [];
+        models = fromStatus.length ? fromStatus : [String(s.chat_model || "").trim()].filter(Boolean);
+        if (!currentChatModel) currentChatModel = String(s.chat_model || "").trim();
+      }
+      sel.innerHTML = "";
+      for (const m of models) {
+        const opt = document.createElement("option");
+        opt.value = m;
+        opt.textContent = m;
+        sel.appendChild(opt);
+      }
+      const target = preferred || currentChatModel || (models[0] || "");
+      if (target) sel.value = target;
+      currentChatModel = sel.value || target;
+      updateModelIndicator();
     }
 
     $("btnUpload").onclick = async () => {
@@ -1441,19 +2126,19 @@
       const { bubble, meta, communitySlot } = appendAssistantThinking();
       try {
         const historyPayload = chatHistory.slice(-CHAT_HISTORY_MAX_MESSAGES);
-        const r = await fetch("/api/chat", {
+        const r = await fetch("/api/chat-stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message, history: historyPayload }),
+          body: JSON.stringify({ message, history: historyPayload, model: currentChatModel || undefined }),
         });
-        const rawText = await r.text();
-        let j = {};
-        try {
-          j = rawText ? JSON.parse(rawText) : {};
-        } catch (_) {
-          /* HTML or plain error body */
-        }
         if (!r.ok) {
+          const rawText = await r.text();
+          let j = {};
+          try {
+            j = rawText ? JSON.parse(rawText) : {};
+          } catch (_) {
+            /* HTML or plain error body */
+          }
           let detail = `HTTP ${r.status}`;
           if (j.detail !== undefined && j.detail !== null) {
             detail = Array.isArray(j.detail)
@@ -1466,14 +2151,72 @@
           }
           throw new Error(detail || r.statusText);
         }
+        const reader = r.body && r.body.getReader ? r.body.getReader() : null;
+        if (!reader) throw new Error("Streaming response is not supported in this browser.");
+        const decoder = new TextDecoder();
+        let pending = "";
+        let streamedText = "";
+        let finalPayload = null;
         bubble.removeAttribute("aria-busy");
         bubble.classList.remove("bubble-thinking");
         bubble.classList.remove("bubble-err");
-        bubble.textContent = j.answer;
+        bubble.textContent = "";
+        $("chatStatus").textContent = "Streaming…";
+        $("chatStatus").className = "status";
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          pending += decoder.decode(value, { stream: true });
+          let nl = pending.indexOf("\n");
+          while (nl >= 0) {
+            const line = pending.slice(0, nl).trim();
+            pending = pending.slice(nl + 1);
+            if (line) {
+              let evt = null;
+              try {
+                evt = JSON.parse(line);
+              } catch (_) {
+                evt = null;
+              }
+              if (evt && evt.type === "token") {
+                const delta = String(evt.delta || "");
+                if (delta) {
+                  streamedText += delta;
+                  bubble.textContent = streamedText;
+                  scrollChatToBottom();
+                }
+              } else if (evt && evt.type === "done") {
+                finalPayload = evt;
+              } else if (evt && evt.type === "error") {
+                throw new Error(String(evt.detail || "Streaming failed"));
+              }
+            }
+            nl = pending.indexOf("\n");
+          }
+        }
+        const tail = pending.trim();
+        if (tail) {
+          try {
+            const evt = JSON.parse(tail);
+            if (evt && evt.type === "done") finalPayload = evt;
+            if (evt && evt.type === "error") {
+              throw new Error(String(evt.detail || "Streaming failed"));
+            }
+          } catch (_) {
+            if (_ instanceof Error) throw _;
+            /* ignore trailing partial text */
+          }
+        }
+        const j = finalPayload || { answer: streamedText, sources: [], community_matches: [] };
+        bubble.removeAttribute("aria-busy");
+        bubble.classList.remove("bubble-thinking");
+        bubble.classList.remove("bubble-err");
+        bubble.textContent = j.answer || streamedText;
         fillSourceChips(meta, j);
-        setupCommunitySaveUI(communitySlot, message, j.answer || "");
+        setupCommunitySaveUI(communitySlot, message, j.answer || streamedText || "");
         chatHistory.push({ role: "user", content: message });
-        chatHistory.push({ role: "assistant", content: j.answer || "" });
+        chatHistory.push({ role: "assistant", content: j.answer || streamedText || "" });
         if (chatHistory.length > CHAT_HISTORY_MAX_MESSAGES) {
           chatHistory = chatHistory.slice(-CHAT_HISTORY_MAX_MESSAGES);
         }
@@ -1692,17 +2435,47 @@
       await runWhisperRecording(null);
     };
 
+    initLanguage();
+    initTheme();
     fetch("/api/health")
       .then((r) => r.json())
       .then((j) => {
         if (j.ok) refreshStatus();
-        else $("srvStatus").textContent = "Ollama not reachable — start Ollama and pull models.";
+        else setServerStatus("Ollama not reachable — start Ollama and pull models.", "err");
       })
       .catch(() => {
-        $("srvStatus").textContent = "Health check failed.";
+        setServerStatus("Health check failed.", "err");
       });
     initStt();
     applyWhisperBtnState();
+    $("chatModel").addEventListener("change", (e) => {
+      currentChatModel = String(e.target.value || "").trim();
+      updateModelIndicator();
+    });
+    $("btnTheme").addEventListener("click", () => {
+      const order = ["light", "dark", "blueprint"];
+      const i = order.indexOf(currentTheme);
+      applyTheme(order[(i + 1) % order.length]);
+    });
+    $("uiLang").addEventListener("change", (e) => {
+      applyLanguage(String(e.target.value || "en"));
+    });
+    $("btnCommunityRefresh").addEventListener("click", refreshCommunityAdminList);
+    $("communityAdmin").addEventListener("toggle", (e) => {
+      if (e.target.open) refreshCommunityAdminList();
+    });
+    $("srvStatusDot").addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleStatusPopover();
+    });
+    document.addEventListener("click", (e) => {
+      if (!statusPopoverOpen) return;
+      const menu = $("srvStatusMenu");
+      if (menu && !menu.contains(e.target)) toggleStatusPopover(false);
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && statusPopoverOpen) toggleStatusPopover(false);
+    });
 
     (function initComposerCollapse() {
       const coPan = document.getElementById("composerPanel");
@@ -1737,6 +2510,7 @@
       if (dr) dr.removeAttribute("open");
     }
     refreshStatus();
+    refreshModelOptions();
   </script>
 </body>
 </html>

@@ -1,0 +1,551 @@
+.theme-blueprint-deco {
+  display: none;
+  pointer-events: none;
+}
+body[data-theme="light"] .theme-blueprint-deco {
+  display: block;
+}
+body[data-theme="light"] .theme-blueprint-deco .bp-bg-watermark {
+  position: fixed;
+  bottom: -90px;
+  left: -90px;
+  width: 520px;
+  height: 520px;
+  opacity: 0.06;
+  z-index: 0;
+  animation: bp-spin-slow 120s linear infinite;
+  filter: saturate(0.55);
+}
+body[data-theme="light"] .theme-blueprint-deco .bp-bg-watermark-2 {
+  position: fixed;
+  top: -70px;
+  right: -70px;
+  width: 320px;
+  height: 320px;
+  opacity: 0.05;
+  z-index: 0;
+  animation: bp-spin-slow 80s linear infinite reverse;
+  filter: saturate(0.55);
+}
+body[data-theme="light"] .wrap {
+  position: relative;
+  z-index: 2;
+}
+
+body[data-theme="blueprint"] {
+  --bp-bg-deep: #060f1a;
+  --bp-bg-input: #071523;
+  --bp-border: #1a3a5c;
+  --bp-border-mid: #1f4a72;
+  --bp-border-lit: #2a6496;
+  --bp-accent: #38bdf8;
+  --bp-accent-dim: #0ea5e9;
+  --bp-accent-glow: rgba(56, 189, 248, 0.15);
+  --bp-text-bright: #e0f7ff;
+  --bp-text-main: #a8d8f0;
+  --bp-text-muted: #4a7fa0;
+  --bp-text-dim: #243e52;
+  --bp-green: #22c55e;
+  --bp-font-head: "Rajdhani", sans-serif;
+  --bp-font-mono: "Share Tech Mono", monospace;
+  --bp-font-body: "Exo 2", sans-serif;
+  background: var(--bp-bg-deep);
+  color: var(--bp-text-main);
+  font-family: var(--bp-font-body), system-ui, sans-serif;
+  overflow: hidden;
+}
+body[data-theme="blueprint"]::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image: linear-gradient(rgba(56, 189, 248, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.04) 1px, transparent 1px),
+    linear-gradient(rgba(56, 189, 248, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.02) 1px, transparent 1px);
+  background-size: 80px 80px, 80px 80px, 16px 16px, 16px 16px;
+  pointer-events: none;
+  z-index: 0;
+}
+body[data-theme="blueprint"]::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.08) 2px,
+    rgba(0, 0, 0, 0.08) 4px
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+body[data-theme="blueprint"] .theme-blueprint-deco {
+  display: block;
+}
+body[data-theme="blueprint"] .theme-blueprint-deco .bp-bg-watermark {
+  position: fixed;
+  bottom: -80px;
+  left: -80px;
+  width: 520px;
+  height: 520px;
+  opacity: 0.045;
+  z-index: 0;
+  animation: bp-spin-slow 120s linear infinite;
+}
+body[data-theme="blueprint"] .theme-blueprint-deco .bp-bg-watermark-2 {
+  position: fixed;
+  top: -60px;
+  right: -60px;
+  width: 320px;
+  height: 320px;
+  opacity: 0.035;
+  z-index: 0;
+  animation: bp-spin-slow 80s linear infinite reverse;
+}
+@keyframes bp-spin-slow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+body[data-theme="blueprint"] .wrap {
+  position: relative;
+  z-index: 2;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 14px 18px;
+  gap: 14px;
+  height: 100vh;
+  box-sizing: border-box;
+}
+body[data-theme="blueprint"] .topbar {
+  background: linear-gradient(180deg, #0d2a46 0%, #091e36 100%);
+  border: 1px solid var(--bp-border-lit);
+  border-radius: 6px;
+  box-shadow: 0 2px 20px rgba(0, 0, 0, 0.5);
+  padding: 0 18px;
+  min-height: 54px;
+  position: relative;
+}
+body[data-theme="blueprint"] .topbar::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--bp-accent), transparent);
+  opacity: 0.4;
+}
+body[data-theme="blueprint"] .topbar-head {
+  align-items: center;
+}
+body[data-theme="blueprint"] h1 {
+  font-family: var(--bp-font-head);
+  font-weight: 700;
+  font-size: 1.25rem;
+  letter-spacing: 1px;
+  color: var(--bp-text-bright);
+  margin: 0;
+}
+body[data-theme="blueprint"] .sub {
+  font-family: var(--bp-font-mono);
+  font-size: 11px;
+  color: var(--bp-text-muted);
+  margin-top: 4px;
+}
+body[data-theme="blueprint"] .btn-theme {
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid var(--bp-border-lit);
+  color: var(--bp-accent);
+  font-family: var(--bp-font-mono);
+  font-size: 10px;
+  padding: 5px 10px;
+  border-radius: 3px;
+  letter-spacing: 0.06em;
+}
+body[data-theme="blueprint"] .btn-theme:hover {
+  background: var(--bp-accent-glow);
+  color: var(--bp-text-bright);
+}
+body[data-theme="blueprint"] .lang-select {
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid var(--bp-border-lit);
+  color: var(--bp-accent);
+  font-family: var(--bp-font-mono);
+  font-size: 10px;
+  padding: 5px 28px 5px 10px;
+  border-radius: 3px;
+  letter-spacing: 0.06em;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%2338bdf8' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+body[data-theme="blueprint"] .lang-select:hover {
+  background-color: var(--bp-accent-glow);
+  color: var(--bp-text-bright);
+}
+body[data-theme="blueprint"] .lang-select:focus {
+  outline: none;
+  border-color: var(--bp-accent);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.12);
+}
+body[data-theme="blueprint"] .status-popover {
+  background: rgba(9, 25, 48, 0.96);
+  border: 1px solid var(--bp-border-lit);
+  color: var(--bp-text-main);
+  font-family: var(--bp-font-mono);
+  font-size: 11px;
+}
+body[data-theme="blueprint"] .status-text.ok {
+  color: var(--bp-green);
+}
+body[data-theme="blueprint"] .status-dot-btn.status-ready {
+  background: var(--bp-green);
+  border-color: #15803d;
+  box-shadow: 0 0 10px rgba(34, 197, 94, 0.55);
+  animation: bp-pulse-dot 2s ease-in-out infinite;
+}
+@keyframes bp-pulse-dot {
+  0%,
+  100% {
+    box-shadow: 0 0 6px var(--bp-green);
+  }
+  50% {
+    box-shadow: 0 0 14px var(--bp-green);
+  }
+}
+body[data-theme="blueprint"] .chat-area {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) min(380px, 34vw);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+  min-height: 0;
+  flex: 1;
+}
+body[data-theme="blueprint"] .conversation,
+body[data-theme="blueprint"] .composer {
+  background: rgba(9, 25, 46, 0.88);
+  border: 1px solid var(--bp-border);
+  border-radius: 6px;
+  backdrop-filter: blur(6px);
+  position: relative;
+  overflow: hidden;
+  box-shadow: none;
+}
+body[data-theme="blueprint"] .conversation {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+body[data-theme="blueprint"] .chat-toolbar {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--bp-border);
+  margin: 0;
+}
+body[data-theme="blueprint"] .chat-model-indicator {
+  font-family: var(--bp-font-mono);
+  font-size: 11px;
+  color: var(--bp-text-muted);
+  letter-spacing: 0.04em;
+}
+body[data-theme="blueprint"] .chat-toolbar .btn-secondary {
+  font-family: var(--bp-font-head);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--bp-text-muted);
+  background: transparent;
+  border: 1px solid var(--bp-border);
+  padding: 5px 14px;
+  border-radius: 3px;
+}
+body[data-theme="blueprint"] .chat-toolbar .btn-secondary:hover:not(:disabled) {
+  border-color: var(--bp-accent);
+  color: var(--bp-accent);
+  background: var(--bp-accent-glow);
+  filter: none;
+}
+body[data-theme="blueprint"] #chatStatus {
+  padding: 6px 16px 0;
+  font-family: var(--bp-font-mono);
+  font-size: 11px;
+}
+body[data-theme="blueprint"] #chatStatus.ok {
+  color: var(--bp-green);
+}
+body[data-theme="blueprint"] .chat-messages {
+  padding: 18px 16px;
+  flex: 1;
+  min-height: 140px;
+  overflow-y: auto;
+}
+body[data-theme="blueprint"] .chat-messages::-webkit-scrollbar {
+  width: 4px;
+}
+body[data-theme="blueprint"] .chat-messages::-webkit-scrollbar-thumb {
+  background: var(--bp-border-mid);
+  border-radius: 2px;
+}
+body[data-theme="blueprint"] .chat-messages:empty::before {
+  content: "CHAT AREA READY  \A Ask about your manual below.  \A   The question and answer appear here.";
+  white-space: pre-line;
+  color: #7fb5d6;
+  font-family: var(--bp-font-body), "Segoe UI", sans-serif;
+  font-weight: 500;
+  font-size: 13px;
+  line-height: 1.75;
+  letter-spacing: 0.03em;
+  opacity: 0.9;
+  text-align: center;
+  text-wrap: balance;
+  width: min(92%, 620px);
+  padding: 1.4rem 1.2rem;
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(8, 24, 42, 0.7), rgba(7, 21, 35, 0.45));
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.08);
+}
+body[data-theme="blueprint"][data-lang="it"] .chat-messages:empty::before {
+  content: "AREA CHAT PRONTA\A\AFai una domanda sul manuale qui sotto.\ALa domanda e la risposta appariranno qui.";
+}
+
+body[data-theme="blueprint"] .chat-messages:empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 320px;
+}
+body[data-theme="blueprint"] .bubble-user {
+  background: rgba(14, 165, 233, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: var(--bp-text-bright);
+  border-radius: 4px;
+  border-bottom-right-radius: 0;
+}
+body[data-theme="blueprint"] .bubble-assistant {
+  background: rgba(9, 25, 46, 0.95);
+  border: 1px solid var(--bp-border);
+  color: var(--bp-text-main);
+  border-radius: 4px;
+  border-bottom-left-radius: 0;
+}
+body[data-theme="blueprint"] .bubble-assistant.bubble-err {
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(40, 15, 18, 0.85);
+  color: #fecaca;
+}
+body[data-theme="blueprint"] .msg-meta {
+  font-family: var(--bp-font-mono);
+  font-size: 10px;
+  color: var(--bp-text-muted);
+}
+body[data-theme="blueprint"] .source-chip {
+  background: rgba(7, 21, 35, 0.9);
+  border-color: var(--bp-border-mid);
+  color: var(--bp-text-muted);
+  font-family: var(--bp-font-mono);
+  font-size: 11px;
+}
+body[data-theme="blueprint"] a.source-chip.source-chip-link {
+  color: var(--bp-accent);
+}
+body[data-theme="blueprint"] .composer {
+  padding: 0;
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 120px);
+  overflow: hidden;
+}
+body[data-theme="blueprint"] .composer-body {
+  padding: 14px 16px 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+body[data-theme="blueprint"] .composer label {
+  font-family: var(--bp-font-mono);
+  font-size: 10px;
+  color: var(--bp-accent);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+body[data-theme="blueprint"] .composer-model-row .model-label {
+  font-family: var(--bp-font-mono);
+  font-size: 10px;
+  color: var(--bp-text-muted);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+body[data-theme="blueprint"] .composer-model-row {
+  margin-bottom: 0;
+}
+body[data-theme="blueprint"] #chatModel,
+body[data-theme="blueprint"] #sttLang {
+  width: 100%;
+  margin-left: 0;
+  background-color: var(--bp-bg-input);
+  border: 1px solid var(--bp-border-mid);
+  color: var(--bp-text-main);
+  font-family: var(--bp-font-mono);
+  font-size: 12px;
+  padding: 7px 10px;
+  border-radius: 3px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%234a7fa0' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+body[data-theme="blueprint"] #q {
+  min-height: 90px;
+  background: var(--bp-bg-input);
+  border: 1px solid var(--bp-border-mid);
+  color: var(--bp-text-bright);
+  font-family: var(--bp-font-body), sans-serif;
+  font-size: 13px;
+  border-radius: 3px;
+  padding: 10px 12px;
+}
+body[data-theme="blueprint"] #q:focus {
+  border-color: var(--bp-accent);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.12);
+  outline: none;
+}
+body[data-theme="blueprint"] #q::placeholder {
+  color: var(--bp-text-dim);
+}
+body[data-theme="blueprint"] .composer-controls {
+  border-top: 1px solid var(--bp-border);
+  padding-top: 12px;
+  margin-top: 4px;
+  gap: 10px;
+}
+body[data-theme="blueprint"] button:not(.btn-theme):not(.status-dot-btn) {
+  font-family: var(--bp-font-head);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  border-radius: 3px;
+  padding: 8px 14px;
+  font-size: 13px;
+}
+body[data-theme="blueprint"] #btnAsk,
+body[data-theme="blueprint"] #btnUpload {
+  background: var(--bp-accent-dim);
+  border: 1px solid var(--bp-accent);
+  color: #fff;
+  box-shadow: 0 0 12px rgba(14, 165, 233, 0.28);
+}
+body[data-theme="blueprint"] .btn-secondary {
+  background: transparent;
+  border: 1px solid var(--bp-border-mid);
+  color: var(--bp-text-main);
+  margin-left: 0;
+}
+body[data-theme="blueprint"] .btn-secondary:hover:not(:disabled) {
+  border-color: var(--bp-accent);
+  color: var(--bp-accent);
+  filter: none;
+  background: rgba(56, 189, 248, 0.06);
+}
+body[data-theme="blueprint"] .btn-danger {
+  background: transparent;
+  border-color: rgba(239, 68, 68, 0.45);
+  color: rgba(239, 68, 68, 0.85);
+}
+body[data-theme="blueprint"] .btn-recording {
+  background: rgba(185, 74, 72, 0.35);
+  border-color: #f87171;
+  color: #fff;
+}
+body[data-theme="blueprint"] input[type="file"] {
+  background: var(--bp-bg-input);
+  border: 1px dashed var(--bp-border-mid);
+  color: var(--bp-text-muted);
+  font-family: var(--bp-font-mono);
+  font-size: 11px;
+}
+body[data-theme="blueprint"] .pdf-drawer-summary {
+  background: rgba(7, 21, 35, 0.65);
+  border-color: var(--bp-border);
+  color: var(--bp-text-muted);
+}
+body[data-theme="blueprint"] .pdf-drawer-title {
+  color: var(--bp-text-bright);
+}
+body[data-theme="blueprint"] .community-admin {
+  background: rgba(56, 189, 248, 0.06);
+  border: 1px solid rgba(56, 189, 248, 0.2);
+}
+body[data-theme="blueprint"] .community-admin summary {
+  font-family: var(--bp-font-mono);
+  font-size: 11px;
+  color: var(--bp-text-bright);
+  background: rgba(9, 25, 46, 0.6);
+}
+body[data-theme="blueprint"] .community-admin[open] summary {
+  background: rgba(9, 25, 46, 0.85);
+  border-bottom-color: var(--bp-border);
+}
+body[data-theme="blueprint"] .community-admin-item {
+  background: rgba(7, 21, 35, 0.85);
+  border-color: var(--bp-border-mid);
+}
+body[data-theme="blueprint"] .community-save-panel {
+  background: rgba(7, 21, 35, 0.75);
+  border-color: var(--bp-border);
+}
+body[data-theme="blueprint"] .community-save-panel input,
+body[data-theme="blueprint"] .community-save-panel textarea {
+  background: var(--bp-bg-input);
+  border-color: var(--bp-border-mid);
+  color: var(--bp-text-bright);
+}
+body[data-theme="blueprint"] code {
+  background: rgba(7, 21, 35, 0.9);
+  color: var(--bp-accent);
+}
+body[data-theme="blueprint"] .thinking-dots span {
+  color: var(--bp-accent);
+}
+body[data-theme="blueprint"] .community-save-toggle {
+  background: none !important;
+  border: none !important;
+  padding: 0.15rem 0 !important;
+  font-family: var(--bp-font-mono) !important;
+  font-size: 11px !important;
+  font-weight: 400 !important;
+  letter-spacing: 0 !important;
+  color: var(--bp-accent) !important;
+  text-decoration: underline;
+  box-shadow: none !important;
+}
+body[data-theme="blueprint"] .composer-collapse-toggle {
+  background: rgba(7, 21, 35, 0.85);
+  border: 1px solid var(--bp-border);
+  color: var(--bp-text-muted);
+}
+
+@media (min-width: 900px) {
+  body[data-theme="blueprint"] .composer {
+    position: sticky;
+    top: 0.75rem;
+    align-self: start;
+  }
+}
+
+@media (max-width: 899px) {
+  body[data-theme="blueprint"] .chat-area {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
+  }
+  body[data-theme="blueprint"] .composer {
+    max-height: min(48vh, 420px);
+  }
+}

@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
+  <defs>
+    <!-- Small grid unit -->
+    <pattern id="smallGrid" width="10" height="10" patternUnits="userSpaceOnUse">
+      <path d="M 10 0 L 0 0 0 10" fill="none" stroke="#4A9EFF" stroke-width="0.3" opacity="0.4"/>
+    </pattern>
+    <!-- Large grid unit -->
+    <pattern id="largeGrid" width="50" height="50" patternUnits="userSpaceOnUse">
+      <rect width="50" height="50" fill="url(#smallGrid)"/>
+      <path d="M 50 0 L 0 0 0 50" fill="none" stroke="#4A9EFF" stroke-width="0.8" opacity="0.6"/>
+    </pattern>
+    <!-- Crosshair marker -->
+    <marker id="cross" markerWidth="6" markerHeight="6" refX="3" refY="3">
+      <line x1="0" y1="3" x2="6" y2="3" stroke="#4A9EFF" stroke-width="0.6" opacity="0.5"/>
+      <line x1="3" y1="0" x2="3" y2="6" stroke="#4A9EFF" stroke-width="0.6" opacity="0.5"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="200" height="200" fill="#0A1628"/>
+
+  <!-- Grid fill -->
+  <rect width="200" height="200" fill="url(#largeGrid)"/>
+
+  <!-- Crosshair dots at major intersections -->
+  <g stroke="#4A9EFF" stroke-width="0.5" opacity="0.5">
+    <line x1="47" y1="50" x2="53" y2="50"/>
+    <line x1="50" y1="47" x2="50" y2="53"/>
+
+    <line x1="97" y1="50" x2="103" y2="50"/>
+    <line x1="100" y1="47" x2="100" y2="53"/>
+
+    <line x1="147" y1="50" x2="153" y2="50"/>
+    <line x1="150" y1="47" x2="150" y2="53"/>
+
+    <line x1="47" y1="100" x2="53" y2="100"/>
+    <line x1="50" y1="97" x2="50" y2="103"/>
+
+    <line x1="97" y1="100" x2="103" y2="100"/>
+    <line x1="100" y1="97" x2="100" y2="103"/>
+
+    <line x1="147" y1="100" x2="153" y2="100"/>
+    <line x1="150" y1="97" x2="150" y2="103"/>
+
+    <line x1="47" y1="150" x2="53" y2="150"/>
+    <line x1="50" y1="147" x2="50" y2="153"/>
+
+    <line x1="97" y1="150" x2="103" y2="150"/>
+    <line x1="100" y1="147" x2="100" y2="153"/>
+
+    <line x1="147" y1="150" x2="153" y2="150"/>
+    <line x1="150" y1="147" x2="150" y2="153"/>
+  </g>
+
+  <!-- Dimension lines / annotation accents -->
+  <g stroke="#4A9EFF" stroke-width="0.6" opacity="0.35" fill="none">
+    <line x1="10" y1="10" x2="190" y2="10"/>
+    <line x1="10" y1="190" x2="190" y2="190"/>
+    <line x1="10" y1="10" x2="10" y2="190"/>
+    <line x1="190" y1="10" x2="190" y2="190"/>
+  </g>
+
+  <!-- Corner bracket accents -->
+  <g stroke="#4A9EFF" stroke-width="1" fill="none" opacity="0.5">
+    <polyline points="10,25 10,10 25,10"/>
+    <polyline points="175,10 190,10 190,25"/>
+    <polyline points="10,175 10,190 25,190"/>
+    <polyline points="175,190 190,190 190,175"/>
+  </g>
+
+  <!-- Center circle accent -->
+  <circle cx="100" cy="100" r="30" fill="none" stroke="#4A9EFF" stroke-width="0.5" opacity="0.2" stroke-dasharray="4 3"/>
+  <circle cx="100" cy="100" r="3" fill="none" stroke="#4A9EFF" stroke-width="0.7" opacity="0.4"/>
+</svg>

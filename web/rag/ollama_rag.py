@@ -1,6 +1,7 @@
 import asyncio
+import json
 import os
-from typing import Any
+from typing import Any, AsyncIterator
 
 import aiohttp
 import numpy as np
@@ -102,6 +103,13 @@ async def ollama_chat(
 ) -> str:
     url = f"{_ollama_base()}/api/chat"
     payload: dict[str, Any] = {"model": model, "messages": messages, "stream": stream}
+    # Qwen reasoning models can return huge "thinking" traces and sometimes empty content.
+    # Default to think=false unless explicitly enabled.
+    think_raw = os.environ.get("OLLAMA_THINK", "0").strip().lower()
+    if think_raw in ("0", "false", "no", "off"):
+        payload["think"] = False
+    elif think_raw in ("1", "true", "yes", "on"):
+        payload["think"] = True
     if options:
         payload["options"] = options
     timeout = aiohttp.ClientTimeout(total=timeout_s)
@@ -111,6 +119,42 @@ async def ollama_chat(
             raise RuntimeError(f"Chat HTTP {resp.status}: {body}")
         data = await resp.json()
     return (data.get("message") or {}).get("content", "").strip()
+
+
+async def ollama_chat_stream(
+    session: aiohttp.ClientSession,
+    model: str,
+    messages: list[dict[str, str]],
+    options: dict[str, Any] | None = None,
+    timeout_s: float = 180.0,
+) -> AsyncIterator[str]:
+    """Yield incremental chat content chunks from Ollama /api/chat stream."""
+    url = f"{_ollama_base()}/api/chat"
+    payload: dict[str, Any] = {"model": model, "messages": messages, "stream": True}
+    think_raw = os.environ.get("OLLAMA_THINK", "0").strip().lower()
+    if think_raw in ("0", "false", "no", "off"):
+        payload["think"] = False
+    elif think_raw in ("1", "true", "yes", "on"):
+        payload["think"] = True
+    if options:
+        payload["options"] = options
+    timeout = aiohttp.ClientTimeout(total=timeout_s)
+    async with session.post(url, json=payload, timeout=timeout) as resp:
+        if resp.status != 200:
+            body = await resp.text()
+            raise RuntimeError(f"Chat HTTP {resp.status}: {body}")
+        async for raw in resp.content:
+            line = raw.decode("utf-8", errors="ignore").strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            msg = data.get("message") or {}
+            delta = msg.get("content")
+            if isinstance(delta, str) and delta:
+                yield delta
 
 
 def _embed_concurrency() -> int:

@@ -68,6 +68,49 @@ class CommunitySolutionsStore:
         )
         return rid
 
+    def delete_tip(self, tip_id: str) -> bool:
+        tid = (tip_id or "").strip()
+        if not tid:
+            return False
+        try:
+            got = self._col.get(ids=[tid], include=[])
+            if not (got.get("ids") or []):
+                return False
+            self._col.delete(ids=[tid])
+            return True
+        except Exception:
+            return False
+
+    def list_tips(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        if self._col.count() == 0:
+            return []
+        k = max(1, min(int(limit), self._col.count()))
+        got = self._col.get(include=["documents", "metadatas"], limit=k)
+        ids = got.get("ids") or []
+        docs = got.get("documents") or []
+        metas = got.get("metadatas") or []
+        out: list[dict[str, Any]] = []
+        for i, rid in enumerate(ids):
+            meta = metas[i] if i < len(metas) and metas[i] else {}
+            doc = docs[i] if i < len(docs) else ""
+            ts_raw = meta.get("saved_ts", "0")
+            try:
+                saved_ts = int(float(str(ts_raw)))
+            except (TypeError, ValueError):
+                saved_ts = 0
+            out.append(
+                {
+                    "id": str(rid or ""),
+                    "question": (doc or "")[:2000],
+                    "comment": str(meta.get("comment") or "")[:4000],
+                    "author": str(meta.get("author") or "Anonymous")[:120],
+                    "answer_excerpt": str(meta.get("answer_excerpt") or "")[:4000],
+                    "saved_ts": saved_ts,
+                }
+            )
+        out.sort(key=lambda x: x.get("saved_ts", 0), reverse=True)
+        return out
+
     def query_similar(
         self,
         query_embedding: np.ndarray,

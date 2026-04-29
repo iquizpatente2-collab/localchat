@@ -1,0 +1,22 @@
+services:
+  localchat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: localchat-app
+    ports:
+      - "8082:8080"
+    environment:
+      # Default: Ollama on this PC (Docker Desktop → Windows host).
+      # Office DGX: set in `.env` → OLLAMA_HOST=http://192.168.0.99:11435
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+      OLLAMA_CHAT_MODEL: "qwen3.5:9b"
+      OLLAMA_EMBED_MODEL: "nomic-embed-text"
+      OLLAMA_CHAT_FALLBACK: "qwen3.5:27b"
+      RAG_CHAT_TIMEOUT_S: "600"
+      RAG_MANUAL_FRONT_MODE: "never"
+      RAG_AUTO_DOCS: "0"
+    volumes:
+      - ./data:/app/data
+      - ./docs:/app/docs
+    restart: unless-stopped

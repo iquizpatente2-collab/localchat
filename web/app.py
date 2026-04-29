@@ -81,14 +81,14 @@ from pathlib import Path
 import aiohttp
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from rapidfuzz import fuzz
 
 from web.rag.ingest import extract_pages_cleaned, pages_to_chunks
 from web.rag.pipeline_bridge import enriched_pages_to_recipe_pages, pipeline_json_to_store_chunks
-from web.rag.ollama_rag import ollama_chat, ollama_embed, embed_many
+from web.rag.ollama_rag import ollama_chat, ollama_chat_stream, ollama_embed, embed_many
 from web.rag.recipe_catalog import (
     FAISS_AVAILABLE,
     RecipeCatalog,
@@ -138,6 +138,7 @@ MAX_TOKENS = int(os.environ.get("RAG_MAX_TOKENS", "480"))
 RAG_CHAT_HISTORY_MAX = max(0, int(os.environ.get("RAG_CHAT_HISTORY_MAX", "12")))
 CHAT_TIMEOUT_S = float(os.environ.get("RAG_CHAT_TIMEOUT_S", "240"))
 CHAT_FALLBACK_MODEL = os.environ.get("OLLAMA_CHAT_FALLBACK", "qwen2.5:7b-instruct")
+_raw_chat_model_options = os.environ.get("OLLAMA_CHAT_MODELS", "").strip()
 RAG_DOCS_FILE = os.environ.get("RAG_DOCS_FILE", "").strip()
 RAG_AUTO_DOCS = os.environ.get("RAG_AUTO_DOCS", "1").strip() not in {"0", "false", "False"}
 LEXICAL_K = int(os.environ.get("RAG_LEXICAL_K", "20"))
@@ -147,6 +148,8 @@ RAG_MANUAL_ORGANIZE = os.environ.get("RAG_MANUAL_ORGANIZE", "1").strip().lower()
 RAG_MANUAL_ORGANIZE_MAX_CHARS = max(2000, int(os.environ.get("RAG_MANUAL_ORGANIZE_MAX_CHARS", "16000")))
 RAG_MANUAL_ORGANIZE_MAX_TOKENS = max(120, int(os.environ.get("RAG_MANUAL_ORGANIZE_MAX_TOKENS", "520")))
 RAG_MANUAL_ORGANIZE_TIMEOUT_S = float(os.environ.get("RAG_MANUAL_ORGANIZE_TIMEOUT_S", "90"))
+_manual_front_mode_raw = os.environ.get("RAG_MANUAL_FRONT_MODE", "auto").strip().lower()
+RAG_MANUAL_FRONT_MODE = _manual_front_mode_raw if _manual_front_mode_raw in {"auto", "always", "never"} else "auto"
 # After reranking: keep only the best-matching passages in chat + UI (reduces irrelevant OCR bulk).
 RAG_MANUAL_MAX_PASSAGES = max(1, min(12, int(os.environ.get("RAG_MANUAL_MAX_PASSAGES", "3"))))
 RAG_MANUAL_FOCUS_SCORE_GAP = float(os.environ.get("RAG_MANUAL_FOCUS_SCORE_GAP", "26"))
@@ -201,6 +204,37 @@ COMMUNITY_SAVE_QUESTION_MAX = 8000
 COMMUNITY_SAVE_COMMENT_MAX = 4000
 COMMUNITY_SAVE_AUTHOR_MAX = 120
 COMMUNITY_SAVE_ANSWER_MAX = 4000
+
+
+def _configured_chat_models() -> list[str]:
+    """Ordered chat model choices exposed to frontend selector."""
+    out: list[str] = []
+
+    def add(model: str) -> None:
+        m = (model or "").strip()
+        if m and m not in out:
+            out.append(m)
+
+    add(CHAT_MODEL)
+    add(CHAT_FALLBACK_MODEL)
+    if _raw_chat_model_options:
+        for item in _raw_chat_model_options.replace(";", ",").split(","):
+            add(item)
+    return out
+
+
+def _safe_selected_model(raw: str | None) -> str | None:
+    """Accept a user-selected model only when it looks valid."""
+    if raw is None:
+        return None
+    m = str(raw).strip()
+    if not m:
+        return None
+    # Simple guard against accidental garbage/whitespace-only payloads.
+    if len(m) > 120 or any(ch in m for ch in "\r\n\t"):
+        return None
+    return m
+
 
 # Pipeline prepends this block to each chunk; strip for cleaner UI/LLM context (see manual_pdf_pipeline/enricher.py).
 _CHUNK_CTX_HEADER_RE = re.compile(
@@ -1162,6 +1196,34 @@ def _format_manual_answer_preamble(
     return "\n".join(lines).rstrip()
 
 
+def _should_include_manual_front(query: str) -> bool:
+    if RAG_MANUAL_FRONT_MODE == "always":
+        return True
+    if RAG_MANUAL_FRONT_MODE == "never":
+        return False
+    q = (query or "").strip().lower()
+    if not q:
+        return False
+    # Show full excerpt blocks only when the user explicitly asks for source text/citations.
+    hints = (
+        "show excerpt",
+        "show passage",
+        "quote",
+        "verbatim",
+        "exact text",
+        "source text",
+        "cite source",
+        "show source",
+        "mostra estratto",
+        "mostra passaggio",
+        "riporta testuale",
+        "testo esatto",
+        "cita fonte",
+        "mostra fonte",
+    )
+    return any(h in q for h in hints)
+
+
 _LEGACY_LLM_PART2 = re.compile(
     r"(?is)\n*\s*2\)\s*\*\*In my view(?:\s*\([^)]*\))?\*\*\s*",
 )
@@ -1649,6 +1711,65 @@ def _maintenance_chunk_bonus(text: str, q: str) -> float:
     return bonus
 
 
+def _extract_page_refs_from_query(q: str) -> set[int]:
+    ql = (q or "").lower()
+    refs: set[int] = set()
+    for m in re.finditer(r"\b(?:pagina|pag|page|p)\s*[:.]?\s*(\d{1,4})\b", ql):
+        try:
+            n = int(m.group(1))
+        except Exception:
+            continue
+        if 1 <= n <= 5000:
+            refs.add(n)
+    return refs
+
+
+def _chunk_covers_page(ch: dict, page_ref: int) -> bool:
+    p = ch.get("page")
+    pe = ch.get("page_end")
+    if not isinstance(p, int):
+        return False
+    if isinstance(pe, int):
+        lo, hi = (p, pe) if p <= pe else (pe, p)
+        return lo <= page_ref <= hi
+    return p == page_ref
+
+
+def _page_reference_bonus(q: str, ch: dict) -> float:
+    refs = _extract_page_refs_from_query(q)
+    if not refs:
+        return 0.0
+    return 120.0 if any(_chunk_covers_page(ch, r) for r in refs) else 0.0
+
+
+def _mechanical_component_bonus(text: str, q: str) -> float:
+    lo = (text or "").lower()
+    ql = (q or "").lower()
+    if not lo or not ql:
+        return 0.0
+    roots = (
+        "cingh",
+        "caten",
+        "belt",
+        "chain",
+        "tendicinghia",
+        "tendicatena",
+        "pulegg",
+        "sprocket",
+        "trasmission",
+    )
+    if not any(r in ql for r in roots):
+        return 0.0
+    bonus = 0.0
+    part_hits = sum(1 for r in roots if r in lo)
+    bonus += min(56.0, part_hits * 18.0)
+    action_terms = ("sostitu", "replace", "cambia", "change", "regola", "adjust", "tension", "allent")
+    procedure_terms = ("procedura", "procedure", "passo", "step", "rimuov", "remove", "install", "installa", "sostituz")
+    if any(t in ql for t in action_terms) and any(t in lo for t in procedure_terms):
+        bonus += 24.0
+    return bonus
+
+
 def _manual_safety_symbols_query_bonus(q: str, text: str) -> float:
     """Up-rank chunks about safety pictograms / hazard messages when the user asks in that area."""
     ql = (q or "").lower()
@@ -1794,7 +1915,9 @@ def _keyword_hits(chunks: list[dict], q: str, top_k: int) -> list[tuple[dict, fl
             score += _fried_chicken_chunk_score_adj(lo, q.lower())
             score += _recipe_step_bonus(txt)
         score += _maintenance_chunk_bonus(txt, q)
+        score += _mechanical_component_bonus(txt, q)
         score += _manual_safety_symbols_query_bonus(q, txt)
+        score += _page_reference_bonus(q, ch)
         score *= _catalog_penalty(txt)
         if score > 0:
             out.append((ch, float(score)))
@@ -1832,7 +1955,9 @@ def _merge_hits(
         cov = _query_coverage_ratio(ch.get("text", ""), query)
         score = (sc * 2.0) * cat + step + dish + max(0.0, 1.0 - rank * 0.08) + (cov * 42.0)
         score += _maintenance_chunk_bonus(ch.get("text", ""), query)
+        score += _mechanical_component_bonus(ch.get("text", ""), query)
         score += _manual_safety_symbols_query_bonus(query, ch.get("text", ""))
+        score += _page_reference_bonus(query, ch)
         k = key_for(ch)
         prev = merged.get(k)
         if prev is None or score > prev[1]:
@@ -1845,7 +1970,9 @@ def _merge_hits(
             score += _fried_chicken_chunk_score_adj(lo_lex, ql)
         score += _query_coverage_ratio(ch.get("text", ""), query) * 58.0
         score += _maintenance_chunk_bonus(ch.get("text", ""), query)
+        score += _mechanical_component_bonus(ch.get("text", ""), query)
         score += _manual_safety_symbols_query_bonus(query, ch.get("text", ""))
+        score += _page_reference_bonus(query, ch)
         k = key_for(ch)
         prev = merged.get(k)
         if prev is None:
@@ -1867,7 +1994,9 @@ def _rerank_hits_for_query(q: str, hits: list[tuple[dict, float]]) -> list[tuple
         txt = ch.get("text", "") or ""
         cov = _query_coverage_ratio(txt, q)
         sym = _manual_safety_symbols_query_bonus(q, txt)
-        return (sym + cov * 14.0, sc)
+        mech = _mechanical_component_bonus(txt, q)
+        page_boost = _page_reference_bonus(q, ch)
+        return (sym + mech + page_boost + cov * 14.0, sc)
 
     return sorted(hits, key=sort_key, reverse=True)
 
@@ -1886,6 +2015,8 @@ def _focus_hits_for_qa(q: str, hits: list[tuple[dict, float]]) -> list[tuple[dic
         txt = ch.get("text", "") or ""
         fs = (
             _manual_safety_symbols_query_bonus(q, txt)
+            + _mechanical_component_bonus(txt, q)
+            + _page_reference_bonus(q, ch)
             + _query_coverage_ratio(txt, q) * 22.0
             + float(sc) * 0.018
         )
@@ -1968,6 +2099,7 @@ class ChatBody(BaseModel):
     message: str
     session_id: str = ""
     history: list[ChatHistoryTurn] = Field(default_factory=list)
+    model: str | None = None
 
 
 class CommunitySaveBody(BaseModel):
@@ -2202,6 +2334,7 @@ def create_app() -> FastAPI:
                 "source_file": store.source_file,
                 "embed_model": EMBED_MODEL,
                 "chat_model": CHAT_MODEL,
+                "chat_model_options": _configured_chat_models(),
                 "recipe_catalog_loaded": rc_loaded,
                 "recipe_count": len(recipe_catalog.recipes) if rc_loaded else 0,
                 "recipe_source": recipe_catalog.source_file,
@@ -2212,6 +2345,35 @@ def create_app() -> FastAPI:
                 "whisper_stt_available": bool(WHISPER_STT_ENABLED and _whisper_lib_available()),
                 "manual_pdf_available": bool(_resolve_active_manual_pdf_path()),
             }
+
+    @app.get("/api/models")
+    async def models():
+        configured = _configured_chat_models()
+        tags_models: list[str] = []
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{os.environ.get('OLLAMA_HOST', 'http://127.0.0.1:11434').rstrip('/')}/api/tags") as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        tags_models = [
+                            str(m.get("name") or "").strip()
+                            for m in (data.get("models") or [])
+                            if str(m.get("name") or "").strip()
+                        ]
+        except Exception:
+            tags_models = []
+
+        merged: list[str] = []
+        for model in configured + tags_models:
+            if model and model not in merged:
+                merged.append(model)
+
+        return {
+            "default": CHAT_MODEL,
+            "fallback": CHAT_FALLBACK_MODEL,
+            "configured": configured,
+            "available": merged,
+        }
 
     @app.get("/api/manual")
     async def serve_active_manual():
@@ -2332,19 +2494,11 @@ def create_app() -> FastAPI:
                 raise HTTPException(500, f"Docs reindex failed: {e}") from e
         return {"ok": True, "chunks": n, "source": docs_pdf.name}
 
-    @app.post("/api/chat")
-    async def chat(body: ChatBody):
-        q = (body.message or "").strip()
-        if not q:
-            raise HTTPException(400, "message is empty")
-
-        hist = _sanitize_manual_history(body.history)
+    async def _prepare_manual_chat_context(q: str, hist: list[dict[str, str]]):
         comm_matches: list[dict] = []
-
         async with _store_lock:
             if not store.chunks or store.embeddings is None:
                 raise HTTPException(400, "No manual loaded. Upload a PDF first.")
-
             try:
                 async with aiohttp.ClientSession() as session:
                     blend_hist = await _retrieval_should_blend_history(session, hist, q, EMBED_MODEL)
@@ -2377,12 +2531,9 @@ def create_app() -> FastAPI:
                     hits = _rerank_hits_for_query(q, hits)
             except Exception as e:
                 raise HTTPException(502, f"Retrieval failed: {e}") from e
-
         if not hits:
             raise HTTPException(500, "Search returned no chunks")
-
         hits_focused = _focus_hits_for_qa(q, hits)
-
         organized_md = ""
         if RAG_MANUAL_ORGANIZE:
             try:
@@ -2391,7 +2542,6 @@ def create_app() -> FastAPI:
             except Exception as e:
                 print(f"[RAG] manual organize skipped: {e!s}")
                 organized_md = ""
-
         context = _format_context(hits_focused)
         bridge = _llm_spelling_bridge(q, hits_focused)
         comm_for_llm = list(comm_matches)
@@ -2416,57 +2566,32 @@ def create_app() -> FastAPI:
         for h in hist:
             messages.append({"role": h["role"], "content": h["content"]})
         messages.append({"role": "user", "content": user_content})
+        return hits_focused, organized_md, comm_for_display, messages
 
-        chat_options = {
-            "num_predict": MAX_TOKENS,
-            "temperature": 0.05,
-        }
-
-        primary_err = None
-        used_model = CHAT_MODEL
-        try:
-            async with aiohttp.ClientSession() as session:
-                answer = await ollama_chat(
-                    session,
-                    CHAT_MODEL,
-                    messages,
-                    stream=False,
-                    options=chat_options,
-                    timeout_s=CHAT_TIMEOUT_S,
-                )
-        except Exception as e:
-            primary_err = str(e)
-            answer = ""
-
-        if not answer and CHAT_FALLBACK_MODEL and CHAT_FALLBACK_MODEL != CHAT_MODEL:
-            used_model = CHAT_FALLBACK_MODEL
-            try:
-                async with aiohttp.ClientSession() as session:
-                    answer = await ollama_chat(
-                        session,
-                        CHAT_FALLBACK_MODEL,
-                        messages,
-                        stream=False,
-                        options=chat_options,
-                        timeout_s=CHAT_TIMEOUT_S,
-                    )
-            except Exception as e:
-                raise HTTPException(
-                    502,
-                    f"Ollama chat failed. Primary ({CHAT_MODEL}): {primary_err}. "
-                    f"Fallback ({CHAT_FALLBACK_MODEL}): {e}",
-                ) from e
-
-        if not answer:
-            raise HTTPException(502, f"Ollama chat failed. Primary ({CHAT_MODEL}): {primary_err}")
-
-        answer = _strip_model_community_section(answer)
-        answer = _strip_legacy_manual_part_from_llm(answer)
-        manual_front = _format_manual_answer_preamble(hits_focused, organized_md or None)
-        answer = f"{manual_front}\n\n---\n\n{answer.strip()}".strip()
+    def _finalize_manual_answer(
+        q: str,
+        answer: str,
+        hits_focused: list[tuple[dict, float]],
+        organized_md: str,
+        comm_for_display: list[dict],
+    ) -> str:
+        out = _strip_model_community_section(answer or "")
+        out = _strip_legacy_manual_part_from_llm(out)
+        if _should_include_manual_front(q):
+            manual_front = _format_manual_answer_preamble(hits_focused, organized_md or None)
+            out = f"{manual_front}\n\n---\n\n{out.strip()}".strip()
+        else:
+            out = out.strip()
         if comm_for_display:
-            answer = answer.rstrip() + _format_community_answer_append(comm_for_display)
+            out = out.rstrip() + _format_community_answer_append(comm_for_display)
+        return out
 
+    def _manual_chat_payload(
+        answer: str,
+        used_model: str,
+        hits_focused: list[tuple[dict, float]],
+        comm_for_display: list[dict],
+    ) -> dict:
         return {
             "answer": answer,
             "model_used": used_model,
@@ -2481,6 +2606,121 @@ def create_app() -> FastAPI:
             ],
             "community_matches": _community_matches_api(comm_for_display),
         }
+
+    @app.post("/api/chat")
+    async def chat(body: ChatBody):
+        q = (body.message or "").strip()
+        if not q:
+            raise HTTPException(400, "message is empty")
+        selected_model = _safe_selected_model(body.model)
+        primary_model = selected_model or CHAT_MODEL
+        fallback_model = None if selected_model else CHAT_FALLBACK_MODEL
+        hist = _sanitize_manual_history(body.history)
+        hits_focused, organized_md, comm_for_display, messages = await _prepare_manual_chat_context(q, hist)
+        chat_options = {"num_predict": MAX_TOKENS, "temperature": 0.05}
+        primary_err = None
+        used_model = primary_model
+        try:
+            async with aiohttp.ClientSession() as session:
+                answer = await ollama_chat(
+                    session,
+                    primary_model,
+                    messages,
+                    stream=False,
+                    options=chat_options,
+                    timeout_s=CHAT_TIMEOUT_S,
+                )
+        except Exception as e:
+            primary_err = str(e)
+            answer = ""
+        if not answer and fallback_model and fallback_model != primary_model:
+            used_model = fallback_model
+            try:
+                async with aiohttp.ClientSession() as session:
+                    answer = await ollama_chat(
+                        session,
+                        fallback_model,
+                        messages,
+                        stream=False,
+                        options=chat_options,
+                        timeout_s=CHAT_TIMEOUT_S,
+                    )
+            except Exception as e:
+                raise HTTPException(
+                    502,
+                    f"Ollama chat failed. Primary ({primary_model}): {primary_err}. "
+                    f"Fallback ({fallback_model}): {e}",
+                ) from e
+        if not answer:
+            raise HTTPException(502, f"Ollama chat failed. Primary ({primary_model}): {primary_err}")
+        final_answer = _finalize_manual_answer(q, answer, hits_focused, organized_md, comm_for_display)
+        return _manual_chat_payload(final_answer, used_model, hits_focused, comm_for_display)
+
+    @app.post("/api/chat-stream")
+    async def chat_stream(body: ChatBody):
+        q = (body.message or "").strip()
+        if not q:
+            raise HTTPException(400, "message is empty")
+        selected_model = _safe_selected_model(body.model)
+        primary_model = selected_model or CHAT_MODEL
+        fallback_model = None if selected_model else CHAT_FALLBACK_MODEL
+        hist = _sanitize_manual_history(body.history)
+        hits_focused, organized_md, comm_for_display, messages = await _prepare_manual_chat_context(q, hist)
+        chat_options = {"num_predict": MAX_TOKENS, "temperature": 0.05}
+
+        async def event_gen():
+            used_model = primary_model
+            primary_err = None
+            pieces: list[str] = []
+            yielded_any = False
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async for delta in ollama_chat_stream(
+                        session,
+                        primary_model,
+                        messages,
+                        options=chat_options,
+                        timeout_s=CHAT_TIMEOUT_S,
+                    ):
+                        yielded_any = True
+                        pieces.append(delta)
+                        yield json.dumps({"type": "token", "delta": delta}, ensure_ascii=False) + "\n"
+            except Exception as e:
+                primary_err = str(e)
+
+            if not yielded_any and fallback_model and fallback_model != primary_model:
+                used_model = fallback_model
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async for delta in ollama_chat_stream(
+                            session,
+                            fallback_model,
+                            messages,
+                            options=chat_options,
+                            timeout_s=CHAT_TIMEOUT_S,
+                        ):
+                            yielded_any = True
+                            pieces.append(delta)
+                            yield json.dumps({"type": "token", "delta": delta}, ensure_ascii=False) + "\n"
+                except Exception as e:
+                    detail = (
+                        f"Ollama chat failed. Primary ({primary_model}): {primary_err}. "
+                        f"Fallback ({fallback_model}): {e}"
+                    )
+                    yield json.dumps({"type": "error", "detail": detail}, ensure_ascii=False) + "\n"
+                    return
+
+            raw_answer = "".join(pieces).strip()
+            if not raw_answer:
+                detail = f"Ollama chat failed. Primary ({primary_model}): {primary_err}"
+                yield json.dumps({"type": "error", "detail": detail}, ensure_ascii=False) + "\n"
+                return
+            final_answer = _finalize_manual_answer(q, raw_answer, hits_focused, organized_md, comm_for_display)
+            payload = _manual_chat_payload(final_answer, used_model, hits_focused, comm_for_display)
+            payload["type"] = "done"
+            yield json.dumps(payload, ensure_ascii=False) + "\n"
+
+        return StreamingResponse(event_gen(), media_type="application/x-ndjson")
 
     @app.post("/api/community-save")
     async def community_save(body: CommunitySaveBody):
@@ -2518,6 +2758,39 @@ def create_app() -> FastAPI:
         except Exception as e:
             raise HTTPException(502, f"Failed to save community tip: {e}") from e
         return {"ok": True, "id": rid}
+
+    @app.get("/api/community")
+    async def community_list(limit: int = 100):
+        if community_store is None:
+            raise HTTPException(
+                503,
+                "Community tips are disabled or Chroma is unavailable. "
+                "Install chromadb (pip install chromadb) and set COMMUNITY_ENABLED=1.",
+            )
+        try:
+            rows = await asyncio.to_thread(lambda: community_store.list_tips(limit=limit))
+        except Exception as e:
+            raise HTTPException(502, f"Failed to list community tips: {e}") from e
+        return {"ok": True, "count": len(rows), "items": rows}
+
+    @app.delete("/api/community/{tip_id}")
+    async def community_delete(tip_id: str):
+        if community_store is None:
+            raise HTTPException(
+                503,
+                "Community tips are disabled or Chroma is unavailable. "
+                "Install chromadb (pip install chromadb) and set COMMUNITY_ENABLED=1.",
+            )
+        tid = (tip_id or "").strip()
+        if not tid:
+            raise HTTPException(400, "tip id is empty")
+        try:
+            deleted = await asyncio.to_thread(lambda: community_store.delete_tip(tid))
+        except Exception as e:
+            raise HTTPException(502, f"Failed to delete community tip: {e}") from e
+        if not deleted:
+            raise HTTPException(404, "Community tip not found")
+        return {"ok": True, "deleted": True, "id": tid}
 
     @app.post("/api/recipes/rank")
     async def recipes_rank(body: RecipeRankBody):

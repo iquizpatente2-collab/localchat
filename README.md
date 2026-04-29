@@ -116,6 +116,47 @@ pip install -r requirements.txt
 uvicorn web.app:app --host 0.0.0.0 --port 8080
 ```
 
+### Run with Docker (recommended for portability)
+
+From repo root:
+
+```bash
+docker compose up --build -d
+```
+
+Open:
+
+- http://127.0.0.1:8080
+
+Stop:
+
+```bash
+docker compose down
+```
+
+The Compose setup runs two containers:
+
+- `localchat-app` (FastAPI app on port `8080`)
+- `localchat-ollama` (Ollama server on port `11434`)
+
+Data persistence:
+
+- App data/indexes are kept in `./data` (bind mount)
+- Ollama models are kept in Docker volume `ollama_data`
+
+First-time model pulls (inside Ollama container):
+
+```bash
+docker exec -it localchat-ollama ollama pull nomic-embed-text
+docker exec -it localchat-ollama ollama pull qwen2.5:3b
+```
+
+If you already run Ollama on the host and do **not** want the Ollama container, set:
+
+- `OLLAMA_HOST=http://host.docker.internal:11434`
+
+and remove/comment the `ollama` service + `depends_on` in `docker-compose.yml`.
+
 Open on the same machine:
 
 - http://127.0.0.1:8080
