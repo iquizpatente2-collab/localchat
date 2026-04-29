@@ -1,113 +1,83 @@
-# Localchat: Local PDF Recipe Intelligence
+# Localchat: Local Manual Q&A (RAG)
 
-Localchat is a local web RAG app for old recipe PDFs.  
-It is tuned for fast retrieval, typo tolerance, and grounded (source-faithful) answers.
+Localchat is a local, web-first RAG app for querying PDF manuals with source-grounded answers.
+It supports multilingual UI (English/Italian), theme switching, model switching, streaming chat, voice input, and community field notes.
 
----
-
-## Current Project Scope
-
-This repo runs a **web-first** workflow:
+## What This Repo Contains
 
 - Backend API: `web/app.py` (FastAPI)
-- Frontend: `web/static/index.html`
-- Retrieval modules: `web/rag/*`
+- Frontend UI: `web/static/index.html` + `web/static/themes.css`
+- Retrieval and ranking logic: `web/rag/*`
+- Docker runtime files: `Dockerfile`, `docker-compose.yml`
 
-Legacy voice-assistant files were removed from this project scope.
+## Current Runtime Model Stack
 
----
+By default this project uses Ollama as the model-serving backend.
 
-## Models We Use
+- Chat model (default in compose): `qwen3.5:9b`
+- Embedding model: `nomic-embed-text`
+- Optional fallback model: `qwen3.5:27b`
 
-Default Ollama models:
+Important: the app container does not include an Ollama server. It expects Ollama API to be reachable at `OLLAMA_HOST` (default `http://host.docker.internal:11434`).
 
-- Embeddings: `nomic-embed-text`
-- Chat model: `qwen2.5:3b` (default; lighter on small GPUs)
-- Optional fallback: `qwen2.5:7b-instruct` or `qwen3.5:9b` for quality comparisons
+## Features
 
-Configurable via:
+### Core Q&A
 
-- `OLLAMA_HOST`
-- `OLLAMA_EMBED_MODEL`
-- `OLLAMA_CHAT_MODEL`
-- `OLLAMA_CHAT_FALLBACK`
+- PDF ingestion and reindexing
+- Streaming answer generation (`/api/chat-stream`)
+- Source chips with page/score metadata
+- Click-to-open manual page source links
+- Conversation history for context-aware follow-up
 
-Inference stays on your machine (no cloud LLM API in this app). Browser **voice** (SpeechRecognition) may still use the browser vendor’s service unless you type instead.
+### UI / UX
 
----
+- Responsive layout (desktop, tablet, mobile)
+- Collapsible composer on mobile
+- Theme switcher:
+  - Light
+  - Dark
+  - Blueprint (industrial style)
+- Language switcher:
+  - English
+  - Italian
+- Model picker in composer
+- Current chat model indicator in chat toolbar
 
-## Web UI (`index.html`)
+### Voice
 
-### Layout
+- Browser speech-to-text (EN/IT)
+- Whisper recording + server transcription (`/api/transcribe`) when available
 
-- **Desktop / wide screens (about 900px+):** Chat on the left, **composer** (ask + PDF tools) in a **sticky side column**.
-- **Tablet / narrow:** Stacked layout with a compact toolbar for PDF actions.
-- **Phone (≤720px):** **Chat-first** layout: the page does not scroll as one long document; **only the conversation panel scrolls** so answers stay readable. The bottom **ask/search** block can be **collapsed** with **Hide search ▼** / **Show search ▲** to read long recipes.
+### Community Notes
 
-### Chat
-
-- **Conversation history** with user and assistant **bubbles**.
-- **Thinking** animation while waiting for a reply.
-- **Source chips** (page · score) under answers; recipe mode shows match titles where available.
-- **Enter** sends; **Shift+Enter** new line (desktop hint; mobile shows “Tap Ask to send”).
-- **Clear conversation** clears the on-screen thread only.
-
-### PDF & index (same features everywhere)
-
-- Upload + **Ingest manual**, **Use docs PDF** (rebuild from `docs/`), **Remove uploaded PDF** (`DELETE /api/upload`).
-- On mobile, **PDF & index** starts **collapsed** in a `<details>` drawer; expand to use it.
-
-### Voice (STT)
-
-- **Start voice** / **Stop voice** (two clicks), languages **English** and **Italian**.
-
----
-
-## Web Page Flow
-
-### On page load
-
-1. `GET /api/health`
-2. `GET /api/status`
-3. UI shows index / models / recipe catalog state
-
-### On PDF upload
-
-1. `POST /api/upload`
-2. Backend extracts pages, builds `data/rag_store/` and `data/recipe_store/`
-3. UI refreshes status
-
-### Ask
-
-- **Recipe checkbox OFF** → `POST /api/chat` (chunk RAG + sources).
-- **Recipe checkbox ON** → `POST /api/recipe-chat` (hybrid retrieval + grounded or LLM mode).
-
----
-
-## Retrieval Stack
-
-`Query → Hybrid retrieval → Top candidates → Grounded output`
-
-Hybrid ranking uses fuzzy matching (`rapidfuzz`), embeddings (FAISS or NumPy), token coverage, phrase-aware scoring, and small **intent bridges** (e.g. tomato sauce / fried chicken) where configured in `web/rag/recipe_catalog.py`.
-
----
+- Save field notes against answers
+- List saved notes
+- Delete saved notes
+- Community relevance signals in response metadata
 
 ## API Endpoints
 
 | Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/health` | Ollama reachability |
-| GET | `/api/status` | Chunks, models, recipe catalog meta |
-| POST | `/api/upload` | Upload PDF → index |
-| DELETE | `/api/upload` | Remove `data/manuals/current_manual.pdf` |
-| POST | `/api/use-docs` | Clear indexes, rebuild from `docs/*.pdf` |
-| POST | `/api/chat` | Manual RAG chat |
-| POST | `/api/recipes/rank` | Raw hybrid recipe ranks (debug) |
-| POST | `/api/recipe-chat` | Recipe hybrid + answer |
+|---|---|---|
+| GET | `/api/health` | Basic backend and Ollama connectivity check |
+| GET | `/api/status` | Index, model, and feature status for UI |
+| GET | `/api/models` | List configured/discovered chat model options |
+| GET | `/api/manual` | Open active manual PDF |
+| POST | `/api/transcribe` | Whisper transcription from uploaded audio |
+| POST | `/api/upload` | Upload and index a PDF manual |
+| DELETE | `/api/upload` | Remove uploaded manual |
+| POST | `/api/use-docs` | Rebuild index from `docs/` PDFs |
+| POST | `/api/chat` | Non-streaming chat response |
+| POST | `/api/chat-stream` | Streaming chat response |
+| POST | `/api/community-save` | Save a community note |
+| GET | `/api/community` | List community notes |
+| DELETE | `/api/community/{tip_id}` | Delete one community note |
+| POST | `/api/recipes/rank` | Raw recipe ranking debug output |
+| POST | `/api/recipe-progress` | Recipe progress pipeline endpoint |
+| POST | `/api/recipe-chat` | Recipe-specific chat endpoint |
 
----
-
-## Run
+## Run Locally (Python)
 
 From repo root:
 
@@ -116,7 +86,11 @@ pip install -r requirements.txt
 uvicorn web.app:app --host 0.0.0.0 --port 8080
 ```
 
-### Run with Docker (recommended for portability)
+Then open:
+
+- [http://127.0.0.1:8080](http://127.0.0.1:8080)
+
+## Run with Docker (Current Project Default)
 
 From repo root:
 
@@ -124,9 +98,9 @@ From repo root:
 docker compose up --build -d
 ```
 
-Open:
+Then open:
 
-- http://127.0.0.1:8080
+- [http://127.0.0.1:8082](http://127.0.0.1:8082)
 
 Stop:
 
@@ -134,100 +108,86 @@ Stop:
 docker compose down
 ```
 
-The Compose setup runs two containers:
+## Ollama Requirements
 
-- `localchat-app` (FastAPI app on port `8080`)
-- `localchat-ollama` (Ollama server on port `11434`)
+This project currently expects an external Ollama API.
 
-Data persistence:
+1. Start Ollama on host machine
+2. Pull required models
+3. Keep Ollama backend running while using Localchat
 
-- App data/indexes are kept in `./data` (bind mount)
-- Ollama models are kept in Docker volume `ollama_data`
-
-First-time model pulls (inside Ollama container):
-
-```bash
-docker exec -it localchat-ollama ollama pull nomic-embed-text
-docker exec -it localchat-ollama ollama pull qwen2.5:3b
-```
-
-If you already run Ollama on the host and do **not** want the Ollama container, set:
-
-- `OLLAMA_HOST=http://host.docker.internal:11434`
-
-and remove/comment the `ollama` service + `depends_on` in `docker-compose.yml`.
-
-Open on the same machine:
-
-- http://127.0.0.1:8080
-
-Use **`--host 0.0.0.0`** if you want other devices on your **LAN** to open the app (e.g. phone on Wi‑Fi).
-
-### Open from a phone on the same Wi‑Fi
-
-1. On the PC, run `ipconfig` and note the **Wi‑Fi IPv4** (e.g. `10.x.x.x`).
-2. On the phone: `http://<that-ip>:8080`
-3. If the phone or `http://<ip>:8080` on the PC says the site cannot be reached, allow **inbound TCP 8080** (or Python) in **Windows Defender Firewall** for **Private** networks. Run **PowerShell or CMD as Administrator**, then:
-
-```text
-netsh advfirewall firewall add rule name="Localchat 8080" dir=in action=allow protocol=TCP localport=8080 profile=private,domain
-```
-
-Recommended Ollama pulls:
+Example model pulls:
 
 ```bash
 ollama pull nomic-embed-text
-ollama pull qwen2.5:3b
-# optional: ollama pull qwen3.5:9b   # set OLLAMA_CHAT_MODEL if you want the larger model
+ollama pull qwen3.5:9b
+ollama pull qwen2.5:7b-instruct
+ollama pull qwen2.5:14b-instruct
 ```
 
----
+Quick check:
 
-## Useful Environment Flags
+```bash
+ollama list
+```
 
+If `ollama list` works, backend is reachable.
+
+## Environment Variables (Most Useful)
+
+### Model / Backend
+
+- `OLLAMA_HOST` (default: `http://host.docker.internal:11434` in Docker compose)
+- `OLLAMA_CHAT_MODEL`
+- `OLLAMA_EMBED_MODEL`
+- `OLLAMA_CHAT_FALLBACK`
+- `RAG_CHAT_TIMEOUT_S`
+
+### RAG Behavior
+
+- `RAG_MANUAL_FRONT_MODE`
 - `RAG_AUTO_DOCS`
 - `RAG_DOCS_FILE`
-- `RAG_RECIPE_NORMALIZE` (expensive if enabled)
+- `RAG_RECIPE_NORMALIZE`
 - `RAG_RECIPE_NORMALIZE_MODE`
 - `RAG_RECIPE_CONCURRENCY`
 - `RAG_EMBED_CONCURRENCY`
 - `RECIPE_W_EMBED`
 - `RECIPE_W_FUZZY`
 - `RECIPE_TOP_K`
-- `OLLAMA_NUM_PARALLEL` (Ollama-side concurrency)
 
----
+### Voice / Community (runtime-dependent)
 
-## Example Queries
+- Whisper availability depends on installed transcription backend and server capability
+- Community features depend on backend status and storage state
 
-- `what is salsa di pomidoro`
-- `how to make tomato sauce`
-- `how to prepare mutton cutlets`
-- `filet of veal recipe`
-- `eggs with tomatoes`
-- `sauce for broiled fish`
-- `risotto con pecorino`
+## UI Notes
 
----
+- Theme and language selections are persisted in browser local storage.
+- Model switch affects chat calls immediately.
+- Empty chat placeholders are localized and theme-aware.
+- In Blueprint mode, animated watermark gears are rendered as background decoration.
 
-## Troubleshooting
+## Common Troubleshooting
 
-- **No recipe catalog**  
-  Upload a PDF again or rebuild `data/rag_store` + `data/recipe_store` (e.g. **Use docs PDF**).
+- **UI loads but chat fails**  
+  Ollama backend is not reachable. Start Ollama and confirm with `ollama list`.
 
-- **Slow startup**  
-  Keep `RAG_RECIPE_NORMALIZE=0` unless you need LLM page normalization.
+- **Model missing from selector**  
+  Pull the model in Ollama and refresh.
 
-- **Embedding mismatch**  
-  Rebuild indexes after changing `OLLAMA_EMBED_MODEL`.
+- **Whisper button disabled**  
+  Whisper backend/media support unavailable in current environment.
 
-- **Wrong recipe match**  
-  Re-ingest after retrieval tweaks; use recipe mode for dish-style questions.
+- **Sources look stale after model/embed changes**  
+  Re-upload manual or run **Use docs PDF** to rebuild indexes.
 
-- **LAN / phone cannot connect**  
-  Firewall rule above; same Wi‑Fi; use `http` not `https`.
+- **Phone/LAN cannot connect**  
+  Open correct host port and allow firewall inbound rule.
 
----
+## Roadmap Direction
+
+Planned/ongoing exploration includes optional OpenAI-compatible backend support (e.g., vLLM) in a separate project copy while keeping this repository stable on Ollama.
 
 ## License
 
