@@ -81,6 +81,74 @@ class CommunitySolutionsStore:
         except Exception:
             return False
 
+    def get_tip(self, tip_id: str) -> dict[str, Any] | None:
+        tid = (tip_id or "").strip()
+        if not tid:
+            return None
+        try:
+            got = self._col.get(ids=[tid], include=["documents", "metadatas"])
+            ids = got.get("ids") or []
+            if not ids:
+                return None
+            docs = got.get("documents") or []
+            metas = got.get("metadatas") or []
+            meta = metas[0] if metas else {}
+            doc = docs[0] if docs else ""
+            ts_raw = meta.get("saved_ts", "0")
+            try:
+                saved_ts = int(float(str(ts_raw)))
+            except (TypeError, ValueError):
+                saved_ts = 0
+            return {
+                "id": str(ids[0]),
+                "question": (doc or "")[:2000],
+                "comment": str(meta.get("comment") or "")[:4000],
+                "author": str(meta.get("author") or "Anonymous")[:120],
+                "answer_excerpt": str(meta.get("answer_excerpt") or "")[:4000],
+                "saved_ts": saved_ts,
+            }
+        except Exception:
+            return None
+
+    def update_tip(
+        self,
+        tip_id: str,
+        *,
+        question: str,
+        embedding: np.ndarray,
+        comment: str,
+        author: str,
+        answer_excerpt: str,
+    ) -> bool:
+        tid = (tip_id or "").strip()
+        if not tid:
+            return False
+        try:
+            got = self._col.get(ids=[tid], include=[])
+            if not (got.get("ids") or []):
+                return False
+        except Exception:
+            return False
+        vec = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        ts = int(time.time())
+        try:
+            self._col.update(
+                ids=[tid],
+                embeddings=[vec.tolist()],
+                documents=[question.strip()[:8000]],
+                metadatas=[
+                    {
+                        "comment": comment.strip()[:4000],
+                        "author": (author or "Anonymous").strip()[:120] or "Anonymous",
+                        "answer_excerpt": (answer_excerpt or "").strip()[:4000],
+                        "saved_ts": str(ts),
+                    }
+                ],
+            )
+            return True
+        except Exception:
+            return False
+
     def list_tips(self, *, limit: int = 100) -> list[dict[str, Any]]:
         if self._col.count() == 0:
             return []

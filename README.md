@@ -51,9 +51,8 @@ Important: the app container does not include an Ollama server. It expects Ollam
 
 ### Community Notes
 
-- Save field notes against answers
-- List saved notes
-- Delete saved notes
+- Save field notes against answers (chat UI and admin form)
+- List, **add**, **edit**, and delete notes under **Manage community notes** (requires community/RAG storage enabled)
 - Community relevance signals in response metadata
 
 ## API Endpoints
@@ -72,6 +71,7 @@ Important: the app container does not include an Ollama server. It expects Ollam
 | POST | `/api/chat-stream` | Streaming chat response |
 | POST | `/api/community-save` | Save a community note |
 | GET | `/api/community` | List community notes |
+| PUT | `/api/community/{tip_id}` | Update an existing community note (re-embeds question text) |
 | DELETE | `/api/community/{tip_id}` | Delete one community note |
 | POST | `/api/recipes/rank` | Raw recipe ranking debug output |
 | POST | `/api/recipe-progress` | Recipe progress pipeline endpoint |
@@ -107,6 +107,76 @@ Stop:
 ```bash
 docker compose down
 ```
+
+Rebuild after pulling code changes:
+
+```bash
+docker compose build --no-cache
+docker compose up -d
+```
+
+### Docker: mirror this project on another machine
+
+Use the same layout anywhere you can run Docker (another PC, a Linux server, CI). You only need the repo, `Dockerfile`, `docker-compose.yml`, and (optionally) a `.env` next to compose.
+
+1. **Clone or copy the repository** on the target host (HTTPS SSH, or unpack a tarball):
+
+   ```bash
+   git clone https://github.com/<org>/localchat.git
+   cd localchat
+   ```
+
+2. **Create data directories** (compose mounts these from the host):
+
+   ```bash
+   mkdir -p data docs
+   ```
+
+   Copy PDFs into `docs/` and any existing index/manual state into `data/` if you are migrating.
+
+3. **Point Ollama at the right host** — create `.env` beside `docker-compose.yml` when Ollama is not on the same machine as Docker Desktop’s default:
+
+   ```bash
+   # .env example (Linux server or remote Ollama)
+   OLLAMA_HOST=http://192.168.1.50:11434
+   ```
+
+   On **Linux** Docker (no Docker Desktop), `host.docker.internal` may not exist; use the host LAN IP or run Ollama in another container on the same user-defined network and set `OLLAMA_HOST` to that service name.
+
+4. **Build and run** (same as local):
+
+   ```bash
+   docker compose up --build -d
+   ```
+
+   Open `http://<that-machine>:8082` (port mapped in `docker-compose.yml`).
+
+### Publish your own image (optional “mirror”)
+
+To reuse a pre-built image instead of building from source on every server:
+
+1. Build and tag (pick your registry and tag):
+
+   ```bash
+   docker build -t ghcr.io/<your-org>/localchat:latest .
+   ```
+
+2. Log in and push:
+
+   ```bash
+   docker login ghcr.io
+   docker push ghcr.io/<your-org>/localchat:latest
+   ```
+
+3. On another host, either **pull and run** without the repo’s build context:
+
+   ```bash
+   docker pull ghcr.io/<your-org>/localchat:latest
+   ```
+
+   …and run with the same `ports`, `environment`, and `volumes` as in `docker-compose.yml`, **or** change `docker-compose.yml` to use `image: ghcr.io/<your-org>/localchat:latest` instead of `build:`.
+
+Keep `./data:/app/data` and `./docs:/app/docs` volumes so indexes and uploads survive container replacements.
 
 ## Ollama Requirements
 
@@ -159,7 +229,7 @@ If `ollama list` works, backend is reachable.
 ### Voice / Community (runtime-dependent)
 
 - Whisper availability depends on installed transcription backend and server capability
-- Community features depend on backend status and storage state
+- Community notes require `chromadb` in the image (included via `requirements.txt`) and `COMMUNITY_ENABLED=1` (default). Data lives under `/app/data` inside the container — persist `./data` as in compose so notes survive restarts
 
 ## UI Notes
 

@@ -331,14 +331,15 @@
       text-decoration: underline;
     }
     .community-save-toggle:hover {
-      color: #6ab0ff;
+      color: color-mix(in srgb, var(--accent) 70%, var(--text) 30%);
     }
     .community-save-panel {
       margin-top: 0.45rem;
       padding: 0.55rem 0.65rem;
       border: 1px solid var(--border);
       border-radius: 8px;
-      background: #0f1620;
+      background: var(--panel);
+      color: var(--text);
       display: none;
       flex-direction: column;
       gap: 0.45rem;
@@ -348,7 +349,8 @@
     }
     .community-save-panel label {
       font-size: 0.78rem;
-      color: var(--muted);
+      font-weight: 500;
+      color: var(--text);
     }
     .community-save-panel input,
     .community-save-panel textarea {
@@ -359,8 +361,17 @@
       padding: 0.4rem 0.5rem;
       border-radius: 6px;
       border: 1px solid var(--border);
-      background: #121a26;
+      background: var(--bg);
       color: var(--text);
+    }
+    .community-save-panel input::placeholder,
+    .community-save-panel textarea::placeholder {
+      color: var(--muted);
+      opacity: 1;
+    }
+    body[data-theme="dark"] .community-save-panel input::placeholder,
+    body[data-theme="dark"] .community-save-panel textarea::placeholder {
+      color: #b0bcc8;
     }
     .community-save-panel textarea {
       min-height: 2.65rem;
@@ -377,6 +388,13 @@
     .community-voice-row .btn-secondary {
       font-size: 0.78rem;
       padding: 0.28rem 0.5rem;
+      margin-left: 0;
+    }
+    .community-save-panel > .btn-secondary {
+      margin-left: 0;
+    }
+    .community-save-panel > .btn-secondary ~ .btn-secondary {
+      margin-left: 0.35rem;
     }
     .community-save-status {
       font-size: 0.76rem;
@@ -389,17 +407,29 @@
       color: #f07178;
     }
     .community-save-context {
-      padding: 0.4rem 0.5rem;
+      padding: 0.45rem 0.55rem;
       border-radius: 6px;
       border: 1px solid var(--border);
-      background: #0c1218;
-      font-size: 0.72rem;
-      line-height: 1.35;
-      color: var(--muted);
+      background: var(--bg);
+      font-size: 0.74rem;
+      line-height: 1.45;
+      color: var(--text);
     }
     .community-save-context strong {
+      display: block;
+      margin-bottom: 0.15rem;
       color: var(--text);
       font-size: 0.76rem;
+      font-weight: 600;
+    }
+    .community-save-hint {
+      font-size: 0.72rem;
+      margin: 0;
+      line-height: 1.4;
+      color: color-mix(in srgb, var(--text) 58%, var(--muted) 42%);
+    }
+    body[data-theme="dark"] .community-save-hint {
+      color: color-mix(in srgb, var(--text) 72%, var(--muted) 28%);
     }
     .bubble-thinking {
       white-space: normal !important;
@@ -698,6 +728,51 @@
       gap: 0.45rem;
       flex-wrap: wrap;
     }
+    .community-admin-section-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text);
+      margin: 0.2rem 0 0.05rem 0;
+    }
+    .community-admin-add {
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: #f8fafc;
+      padding: 0.5rem 0.55rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    .community-admin-add label {
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--text);
+    }
+    .community-admin-add input,
+    .community-admin-add textarea {
+      width: 100%;
+      box-sizing: border-box;
+      font-size: 0.85rem;
+      line-height: 1.4;
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.45rem 0.5rem;
+    }
+    .community-admin-add textarea#communityNewComment {
+      min-height: 5.5rem;
+    }
+    .community-admin-add-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      align-items: center;
+      margin-top: 0.15rem;
+    }
+    .community-admin-add-actions .btn-secondary {
+      margin-left: 0;
+    }
     .community-admin-list {
       display: flex;
       flex-direction: column;
@@ -715,10 +790,64 @@
       gap: 0.28rem;
     }
     .community-admin-item-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
+      gap: 0.35rem 0.5rem;
+    }
+    .community-admin-actions {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 0.45rem;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      flex-shrink: 0;
+    }
+    .community-admin-actions .btn-secondary {
+      margin-left: 0;
+    }
+    .community-admin-item-head .community-admin-meta {
+      min-width: 0;
+      overflow: hidden;
+      word-break: break-word;
+    }
+    .community-admin-edit-hint {
+      font-size: 0.7rem;
+      color: var(--muted);
+      line-height: 1.3;
+      font-style: italic;
+    }
+    .community-admin-edit-panel {
+      display: none;
+      flex-direction: column;
+      gap: 0.4rem;
+      margin-top: 0.35rem;
+      padding: 0.5rem 0.55rem;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--bg);
+    }
+    .community-admin-edit-panel.open {
+      display: flex;
+    }
+    .community-admin-edit-panel textarea,
+    .community-admin-edit-panel input {
+      width: 100%;
+      box-sizing: border-box;
+      font-size: 0.85rem;
+      line-height: 1.4;
+      color: var(--text);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.4rem 0.5rem;
+    }
+    .community-admin-edit-panel textarea {
+      min-height: 3.2rem;
+    }
+    body[data-theme="dark"] .community-admin-edit-panel textarea,
+    body[data-theme="dark"] .community-admin-edit-panel input {
+      background: #0f1419;
     }
     .community-admin-meta {
       font-size: 0.72rem;
@@ -742,6 +871,15 @@
     }
     body[data-theme="dark"] .community-admin-item {
       background: #0f1620;
+    }
+    body[data-theme="dark"] .community-admin-add {
+      background: #131d2a;
+    }
+    /* Edit must stay visible next to Delete (avoid clipped/lost in narrow layouts) */
+    .btn-community-edit {
+      font-weight: 600;
+      min-width: 4.75rem;
+      flex: 0 0 auto;
     }
     .status.ok { color: #5bd37a; }
     .status.err {
@@ -1214,8 +1352,24 @@
               <div class="community-admin-body">
                 <div class="community-admin-toolbar">
                   <button type="button" id="btnCommunityRefresh" class="btn-secondary">Refresh notes</button>
+                  <button type="button" id="btnCommunityClearForm" class="btn-secondary">Clear form</button>
                   <span class="status" id="communityAdminStatus"></span>
                 </div>
+                <p class="community-admin-section-title" id="lblCommunityAddSection">Add a new community note</p>
+                <div id="communityAdminAddPanel" class="community-admin-add">
+                  <label for="communityNewQuestion" id="lblCommunityNewQ">Question / context</label>
+                  <textarea id="communityNewQuestion" rows="2"></textarea>
+                  <label for="communityNewComment" id="lblCommunityNewC">Community note</label>
+                  <textarea id="communityNewComment" rows="6"></textarea>
+                  <label for="communityNewAuthor" id="lblCommunityNewA">Author (optional)</label>
+                  <input type="text" id="communityNewAuthor" />
+                  <label for="communityNewAnswer" id="lblCommunityNewAns">Answer snapshot (optional)</label>
+                  <textarea id="communityNewAnswer" rows="2"></textarea>
+                  <div class="community-admin-add-actions">
+                    <button type="button" id="btnCommunitySaveNew" class="btn-secondary">Save note</button>
+                  </div>
+                </div>
+                <p class="community-admin-section-title" id="lblCommunitySavedSection">Saved notes</p>
                 <div id="communityAdminList" class="community-admin-list"></div>
               </div>
             </details>
@@ -1280,6 +1434,18 @@
         removeUpload: "Remove uploaded PDF",
         manageCommunity: "Manage community notes",
         refreshNotes: "Refresh notes",
+        addCommunityNoteSection: "Add a new community note",
+        savedCommunityNotes: "Saved notes",
+        editNoteHint: "Preview above may be shortened. Click Edit to change the full question, note, author, and answer snapshot.",
+        clearNewNoteForm: "Clear form",
+        editNote: "Edit",
+        saveNoteChanges: "Save changes",
+        cancelEdit: "Cancel",
+        saveNewCommunityNote: "Save note",
+        lblNewQ: "Question / context",
+        lblNewC: "Community note",
+        lblNewA: "Author (optional)",
+        lblNewAns: "Answer snapshot (optional)",
         qPlaceholder: "e.g. alarm E12 causes, lubrication interval, reset sequence after overload",
         voiceEnglish: "Voice: English",
         voiceItalian: "Voice: Italiano",
@@ -1311,6 +1477,18 @@
         removeUpload: "Rimuovi PDF caricato",
         manageCommunity: "Gestisci note community",
         refreshNotes: "Aggiorna note",
+        addCommunityNoteSection: "Aggiungi una nuova nota community",
+        savedCommunityNotes: "Note salvate",
+        editNoteHint: "L’anteprima sopra può essere troncata. Usa Modifica per cambiare domanda, nota, autore ed estratto risposta.",
+        clearNewNoteForm: "Pulisci modulo",
+        editNote: "Modifica",
+        saveNoteChanges: "Salva modifiche",
+        cancelEdit: "Annulla",
+        saveNewCommunityNote: "Salva nota",
+        lblNewQ: "Domanda / contesto",
+        lblNewC: "Nota community",
+        lblNewA: "Autore (opzionale)",
+        lblNewAns: "Estratto risposta (opzionale)",
         qPlaceholder: "es. cause allarme E12, intervallo lubrificazione, sequenza reset dopo sovraccarico",
         voiceEnglish: "Voce: Inglese",
         voiceItalian: "Voce: Italiano",
@@ -1384,7 +1562,15 @@
       if ($("btnUseDocs")) $("btnUseDocs").textContent = t("useDocsPdf");
       if ($("btnRemoveUpload")) $("btnRemoveUpload").textContent = t("removeUpload");
       if ($("lblCommunitySummary")) $("lblCommunitySummary").textContent = t("manageCommunity");
+      if ($("lblCommunityAddSection")) $("lblCommunityAddSection").textContent = t("addCommunityNoteSection");
+      if ($("lblCommunitySavedSection")) $("lblCommunitySavedSection").textContent = t("savedCommunityNotes");
+      if ($("btnCommunityClearForm")) $("btnCommunityClearForm").textContent = t("clearNewNoteForm");
       if ($("btnCommunityRefresh")) $("btnCommunityRefresh").textContent = t("refreshNotes");
+      if ($("lblCommunityNewQ")) $("lblCommunityNewQ").textContent = t("lblNewQ");
+      if ($("lblCommunityNewC")) $("lblCommunityNewC").textContent = t("lblNewC");
+      if ($("lblCommunityNewA")) $("lblCommunityNewA").textContent = t("lblNewA");
+      if ($("lblCommunityNewAns")) $("lblCommunityNewAns").textContent = t("lblNewAns");
+      if ($("btnCommunitySaveNew")) $("btnCommunitySaveNew").textContent = t("saveNewCommunityNote");
       if ($("q")) $("q").placeholder = t("qPlaceholder");
       if ($("sttLang")) {
         const opts = $("sttLang").options;
@@ -1459,11 +1645,16 @@
             const meta = document.createElement("div");
             meta.className = "community-admin-meta";
             meta.textContent = `${it.author || "Anonymous"} · ${fmtTime(it.saved_ts)} · id ${it.id || ""}`;
+            const edit = document.createElement("button");
+            edit.type = "button";
+            edit.className = "btn-secondary btn-community-edit";
+            edit.textContent = t("editNote") || "Edit";
+            edit.title = (t("editNote") || "Edit") + " — change question, note, author, answer snapshot";
+            edit.setAttribute("aria-label", t("editNote") || "Edit");
             const del = document.createElement("button");
             del.type = "button";
             del.className = "btn-secondary btn-danger";
             del.textContent = "Delete";
-            del.style.marginLeft = "0";
             del.onclick = async () => {
               if (!it.id) return;
               if (!window.confirm("Delete this community note?")) return;
@@ -1486,17 +1677,110 @@
                 del.disabled = false;
               }
             };
+            const actions = document.createElement("div");
+            actions.className = "community-admin-actions";
+            actions.appendChild(edit);
+            actions.appendChild(del);
             head.appendChild(meta);
-            head.appendChild(del);
+            head.appendChild(actions);
             const q = document.createElement("div");
             q.className = "community-admin-question";
             q.textContent = `Q: ${(it.question || "").trim().slice(0, 220) || "(empty)"}`;
             const c = document.createElement("div");
             c.className = "community-admin-meta";
             c.textContent = `Note: ${(it.comment || "").trim().slice(0, 260) || "(empty)"}`;
+            const hint = document.createElement("div");
+            hint.className = "community-admin-edit-hint";
+            hint.textContent = t("editNoteHint");
+            const editWrap = document.createElement("div");
+            editWrap.className = "community-admin-edit-panel";
+            const qTa = document.createElement("textarea");
+            qTa.rows = 2;
+            qTa.placeholder = "Question / context";
+            qTa.value = (it.question || "").trim();
+            const cTa = document.createElement("textarea");
+            cTa.rows = 5;
+            cTa.placeholder = "Community note";
+            cTa.value = (it.comment || "").trim();
+            const authInp = document.createElement("input");
+            authInp.type = "text";
+            authInp.placeholder = "Author (optional)";
+            authInp.value = (it.author || "").trim();
+            const ansTa = document.createElement("textarea");
+            ansTa.rows = 3;
+            ansTa.placeholder = "Answer snapshot (optional)";
+            ansTa.value = (it.answer_excerpt || "").trim();
+            const btnRow = document.createElement("div");
+            btnRow.className = "community-admin-add-actions";
+            const saveBtn = document.createElement("button");
+            saveBtn.type = "button";
+            saveBtn.className = "btn-secondary";
+            saveBtn.textContent = t("saveNoteChanges");
+            const cancelBtn = document.createElement("button");
+            cancelBtn.type = "button";
+            cancelBtn.className = "btn-secondary";
+            cancelBtn.textContent = t("cancelEdit");
+            cancelBtn.onclick = () => {
+              editWrap.classList.remove("open");
+            };
+            saveBtn.onclick = async () => {
+              const payload = {
+                question: qTa.value.trim(),
+                comment: cTa.value.trim(),
+                author: authInp.value.trim(),
+                answer_snapshot: ansTa.value.trim(),
+              };
+              if (!payload.comment) {
+                st.textContent = "Note text cannot be empty.";
+                st.className = "status err";
+                return;
+              }
+              saveBtn.disabled = true;
+              try {
+                const rr = await fetch(`/api/community/${encodeURIComponent(it.id)}`, {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(payload),
+                });
+                const body = await rr.text();
+                let jj = {};
+                try {
+                  jj = body ? JSON.parse(body) : {};
+                } catch (_) {}
+                if (!rr.ok) {
+                  const detail =
+                    jj.detail !== undefined
+                      ? typeof jj.detail === "string"
+                        ? jj.detail
+                        : JSON.stringify(jj.detail)
+                      : body || rr.statusText;
+                  throw new Error(detail);
+                }
+                st.textContent = "Note updated.";
+                st.className = "status ok";
+                editWrap.classList.remove("open");
+                await refreshCommunityAdminList();
+              } catch (e) {
+                st.textContent = String(e.message || e);
+                st.className = "status err";
+              }
+              saveBtn.disabled = false;
+            };
+            btnRow.appendChild(saveBtn);
+            btnRow.appendChild(cancelBtn);
+            editWrap.appendChild(qTa);
+            editWrap.appendChild(cTa);
+            editWrap.appendChild(authInp);
+            editWrap.appendChild(ansTa);
+            editWrap.appendChild(btnRow);
+            edit.onclick = () => {
+              editWrap.classList.toggle("open");
+            };
             row.appendChild(head);
             row.appendChild(q);
             row.appendChild(c);
+            row.appendChild(hint);
+            row.appendChild(editWrap);
             list.appendChild(row);
           }
         }
@@ -1506,6 +1790,77 @@
         st.textContent = String(e.message || e);
         st.className = "status err";
       }
+    }
+
+    function clearCommunityAddForm() {
+      const q = $("communityNewQuestion");
+      const c = $("communityNewComment");
+      const a = $("communityNewAuthor");
+      const ans = $("communityNewAnswer");
+      if (q) q.value = "";
+      if (c) c.value = "";
+      if (a) a.value = "";
+      if (ans) ans.value = "";
+    }
+
+    async function saveNewCommunityNoteFromAdmin() {
+      const st = $("communityAdminStatus");
+      if (!serverCommunityEnabled) return;
+      const q = ($("communityNewQuestion") && $("communityNewQuestion").value.trim()) || "";
+      const c = ($("communityNewComment") && $("communityNewComment").value.trim()) || "";
+      const author = ($("communityNewAuthor") && $("communityNewAuthor").value.trim()) || "";
+      const answer_snapshot = ($("communityNewAnswer") && $("communityNewAnswer").value.trim()) || "";
+      if (!c) {
+        if (st) {
+          st.textContent = "Please enter a community note.";
+          st.className = "status err";
+        }
+        return;
+      }
+      const btn = $("btnCommunitySaveNew");
+      if (btn) btn.disabled = true;
+      if (st) {
+        st.textContent = "Saving…";
+        st.className = "status";
+      }
+      try {
+        const r = await fetch("/api/community-save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            question: q,
+            comment: c,
+            author,
+            answer_snapshot: answer_snapshot.slice(0, 4000),
+          }),
+        });
+        const raw = await r.text();
+        let j = {};
+        try {
+          j = raw ? JSON.parse(raw) : {};
+        } catch (_) {}
+        if (!r.ok) {
+          const detail =
+            j.detail !== undefined
+              ? typeof j.detail === "string"
+                ? j.detail
+                : JSON.stringify(j.detail)
+              : raw || r.statusText;
+          throw new Error(detail);
+        }
+        if (st) {
+          st.textContent = "Note saved.";
+          st.className = "status ok";
+        }
+        clearCommunityAddForm();
+        await refreshCommunityAdminList();
+      } catch (e) {
+        if (st) {
+          st.textContent = String(e.message || e);
+          st.className = "status err";
+        }
+      }
+      if (btn) btn.disabled = false;
     }
 
     function toggleStatusPopover(forceOpen) {
@@ -1824,7 +2179,7 @@
       ctxBody.appendChild(aLine);
       ctxSummary.appendChild(ctxBody);
       const voiceHint = document.createElement("p");
-      voiceHint.style.cssText = "font-size:0.72rem;color:var(--muted);margin:0;";
+      voiceHint.className = "community-save-hint";
       voiceHint.textContent =
         "Fill the note by typing or use browser voice / Whisper (same EN/IT language as the bar above).";
       const voiceRow = document.createElement("div");
@@ -2461,6 +2816,12 @@
       applyLanguage(String(e.target.value || "en"));
     });
     $("btnCommunityRefresh").addEventListener("click", refreshCommunityAdminList);
+    if ($("btnCommunityClearForm")) {
+      $("btnCommunityClearForm").addEventListener("click", () => clearCommunityAddForm());
+    }
+    if ($("btnCommunitySaveNew")) {
+      $("btnCommunitySaveNew").addEventListener("click", saveNewCommunityNoteFromAdmin);
+    }
     $("communityAdmin").addEventListener("toggle", (e) => {
       if (e.target.open) refreshCommunityAdminList();
     });

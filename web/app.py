@@ -2109,6 +2109,15 @@ class CommunitySaveBody(BaseModel):
     answer_snapshot: str = ""
 
 
+class CommunityUpdateBody(BaseModel):
+    """Replace fields on an existing tip; same length limits as save."""
+
+    question: str
+    comment: str
+    author: str = ""
+    answer_snapshot: str = ""
+
+
 class RecipeChatBody(BaseModel):
     message: str
     mode: str = "grounded"
@@ -2791,6 +2800,55 @@ def create_app() -> FastAPI:
         if not deleted:
             raise HTTPException(404, "Community tip not found")
         return {"ok": True, "deleted": True, "id": tid}
+
+    @app.put("/api/community/{tip_id}")
+    async def community_update(tip_id: str, body: CommunityUpdateBody):
+        if community_store is None:
+            raise HTTPException(
+                503,
+                "Community tips are disabled or Chroma is unavailable. "
+                "Install chromadb (pip install chromadb) and set COMMUNITY_ENABLED=1.",
+            )
+        tid = (tip_id or "").strip()
+        if not tid:
+            raise HTTPException(400, "tip id is empty")
+        q = (body.question or "").strip()
+        c = (body.comment or "").strip()
+        if not c:
+            raise HTTPException(400, "comment is empty")
+        if len(q) > COMMUNITY_SAVE_QUESTION_MAX:
+            raise HTTPException(400, f"question too long (max {COMMUNITY_SAVE_QUESTION_MAX})")
+        if len(c) > COMMUNITY_SAVE_COMMENT_MAX:
+            raise HTTPException(400, f"comment too long (max {COMMUNITY_SAVE_COMMENT_MAX})")
+        author = (body.author or "").strip()[:COMMUNITY_SAVE_AUTHOR_MAX]
+        ans = (body.answer_snapshot or "").strip()[:COMMUNITY_SAVE_ANSWER_MAX]
+        try:
+            existing = await asyncio.to_thread(lambda: community_store.get_tip(tid))
+        except Exception as e:
+            raise HTTPException(502, f"Failed to load community tip: {e}") from e
+        if not existing:
+            raise HTTPException(404, "Community tip not found")
+        try:
+            async with aiohttp.ClientSession() as session:
+                q_boost = _embedding_query_boost(q[:COMMUNITY_SAVE_QUESTION_MAX])
+                emb = await ollama_embed(session, q_boost, EMBED_MODEL)
+            ok = await asyncio.to_thread(
+                lambda: community_store.update_tip(
+                    tid,
+                    question=q[:COMMUNITY_SAVE_QUESTION_MAX],
+                    embedding=emb,
+                    comment=c[:COMMUNITY_SAVE_COMMENT_MAX],
+                    author=author,
+                    answer_excerpt=ans,
+                )
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(502, f"Failed to update community tip: {e}") from e
+        if not ok:
+            raise HTTPException(404, "Community tip not found")
+        return {"ok": True, "id": tid}
 
     @app.post("/api/recipes/rank")
     async def recipes_rank(body: RecipeRankBody):
