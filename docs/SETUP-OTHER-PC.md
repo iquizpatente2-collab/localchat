@@ -1,82 +1,116 @@
-# Set up Localchat on another PC (Windows + Docker)
-
-## What you need on the new PC
-
-1. **Docker Desktop** — installed and running  
-2. **Git** — to clone the repo  
-3. **Ollama** — only if AI runs on *this* PC (skip if you use a remote DGX server)  
-4. **Your manual PDF** — one file (not in Git)
+# Set up Localchat on another machine
 
 Repo: `https://github.com/iquizpatente2-collab/localchat.git`
 
+You need: **Docker**, **Git**, your **PDF** in `docs/`, and **Ollama reachable** (on this machine or a remote DGX — not inside the Localchat image).
+
 ---
 
-## Quick setup (recommended)
+## Linux (Ubuntu / Debian / etc.)
 
-Open **PowerShell** and run:
+### 1. Install Docker
 
-```powershell
-cd C:\
+```bash
+# Example (Docker’s official guide may differ by distro):
+sudo apt-get update
+sudo apt-get install -y docker.io docker-compose-v2 git curl
+sudo usermod -aG docker "$USER"
+# Log out and back in so group docker applies
+```
+
+### 2. Clone and add PDF
+
+```bash
+cd ~
 git clone https://github.com/iquizpatente2-collab/localchat.git
 cd localchat
-
-# Copy your PDF (change path to your file)
-mkdir docs -Force
-copy "D:\path\to\your-manual.pdf" docs\
-
-# Automated setup (local Ollama on this PC)
-.\scripts\setup-other-pc.ps1
+mkdir -p docs
+cp /path/to/your-manual.pdf docs/
+chmod +x scripts/setup-other-pc.sh scripts/switch-mode.sh
 ```
 
-If Ollama is on a **remote server** (DGX), edit `env.dgx.example` (copy to `.env.dgx`) with the server IP, then:
+### 3. Setup
 
-```powershell
-.\scripts\setup-other-pc.ps1 -Mode dgx
-```
+**Ollama on this Linux PC:**
 
----
-
-## Ollama on this PC (first time only)
-
-Install Ollama from https://ollama.com, then:
-
-```powershell
+```bash
+# Install Ollama: https://ollama.com/download/linux
 ollama pull nomic-embed-text
 ollama pull qwen3.5:9b
+./scripts/setup-other-pc.sh
 ```
 
-Keep Ollama running while you use Localchat.
+**Ollama on remote DGX only (no Ollama on this PC):**
 
----
+```bash
+cp env.dgx.example .env.dgx
+nano .env.dgx   # set OLLAMA_HOST=http://YOUR-DGX-IP:11435
+cp .env.dgx .env
+./scripts/setup-other-pc.sh dgx
+```
 
-## Use the app
+### 4. Use the app
 
-1. Open **http://127.0.0.1:8082**  
-2. **Admin login:** username `admin`, password `admin`  
-3. Open **Gestisci note community** / PDF section → click **Usa PDF docs** (indexes `docs\` PDF)  
-4. Wait until status shows index ready  
-5. Ask questions in the chat box  
+1. Open **http://127.0.0.1:8082** (or `http://<server-ip>:8082` from another browser on the LAN).
+2. Admin login: **admin** / **admin**
+3. **Use docs PDF** (indexes `docs/*.pdf`)
+4. Ask questions in chat
 
----
-
-## Useful commands
+### Linux commands
 
 | Task | Command |
 |------|---------|
 | Start | `docker compose up -d` |
 | Rebuild after `git pull` | `docker compose up --build -d` |
 | Stop | `docker compose down` |
-| Switch local / DGX Ollama | `.\scripts\switch-mode.ps1 -Mode local` or `-Mode dgx` |
-| Check health | `curl http://127.0.0.1:8082/api/health` |
+| Switch Ollama target | `./scripts/switch-mode.sh local` or `dgx` |
+| Health | `curl http://127.0.0.1:8082/api/health` |
 
----
-
-## Problems
+### Linux troubleshooting
 
 | Symptom | Fix |
 |---------|-----|
-| Chat fails | Start Ollama; check `OLLAMA_HOST` in `.env` |
-| No index | Admin → **Use docs PDF** after PDF is in `docs\` |
-| `host.docker.internal` fails on Linux | Use host IP in `.env`: `OLLAMA_HOST=http://192.168.x.x:11434` |
+| `host.docker.internal` fails | Set in `.env`: `OLLAMA_HOST=http://172.17.0.1:11434` or your host’s LAN IP |
+| Permission denied on Docker | `sudo usermod -aG docker $USER` and re-login |
+| Chat fails | Ollama running; firewall allows port 11434 from Docker bridge |
+| Remote DGX | `OLLAMA_HOST=http://dgx-ip:port`; Ollama must listen on `0.0.0.0`, not only `127.0.0.1` |
 
-No code changes are needed when you change the PDF filename — any `.pdf` in `docs\` works.
+---
+
+## Windows
+
+### Quick setup
+
+```powershell
+git clone https://github.com/iquizpatente2-collab/localchat.git
+cd localchat
+mkdir docs -Force
+copy "D:\path\to\your-manual.pdf" docs\
+.\scripts\setup-other-pc.ps1
+```
+
+Remote DGX:
+
+```powershell
+.\scripts\setup-other-pc.ps1 -Mode dgx
+```
+
+### Ollama on Windows (local)
+
+```powershell
+ollama pull nomic-embed-text
+ollama pull qwen3.5:9b
+```
+
+### Windows commands
+
+| Task | Command |
+|------|---------|
+| Switch Ollama | `.\scripts\switch-mode.ps1 -Mode local` or `dgx` |
+| Health | `curl http://127.0.0.1:8082/api/health` |
+
+---
+
+## PDF in `docs/`
+
+No code changes for the filename. Put any `.pdf` in `docs/`, then admin → **Use docs PDF**. If several PDFs exist, the **newest** file is used (or set `RAG_DOCS_FILE=docs/name.pdf` in `.env`).

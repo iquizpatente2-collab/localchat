@@ -19,4 +19,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./docs:/app/docs
+    extra_hosts:
+      # Linux: reach Ollama on the host at host.docker.internal (see env.local.example).
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
