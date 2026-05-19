@@ -64,15 +64,17 @@ Important: the app container does not include an Ollama server. It expects Ollam
 | GET | `/api/models` | List configured/discovered chat model options |
 | GET | `/api/manual` | Open active manual PDF |
 | POST | `/api/transcribe` | Whisper transcription from uploaded audio |
-| POST | `/api/upload` | Upload and index a PDF manual |
-| DELETE | `/api/upload` | Remove uploaded manual |
-| POST | `/api/use-docs` | Rebuild index from `docs/` PDFs |
+| POST | `/api/upload` | Upload and index a PDF manual (**admin**) |
+| DELETE | `/api/upload` | Remove uploaded manual (**admin**) |
+| POST | `/api/use-docs` | Rebuild index from `docs/` PDFs (**admin**) |
 | POST | `/api/chat` | Non-streaming chat response |
 | POST | `/api/chat-stream` | Streaming chat response |
-| POST | `/api/community-save` | Save a community note |
-| GET | `/api/community` | List community notes |
-| PUT | `/api/community/{tip_id}` | Update an existing community note (re-embeds question text) |
-| DELETE | `/api/community/{tip_id}` | Delete one community note |
+| POST | `/api/admin/login` | Admin login (returns session token) |
+| GET | `/api/admin/session` | Check whether admin token is valid |
+| POST | `/api/community-save` | Save a community note (chat; no admin required) |
+| GET | `/api/community` | List community notes (**admin**) |
+| PUT | `/api/community/{tip_id}` | Update an existing community note (**admin**) |
+| DELETE | `/api/community/{tip_id}` | Delete one community note (**admin**) |
 | POST | `/api/recipes/rank` | Raw recipe ranking debug output |
 | POST | `/api/recipe-progress` | Recipe progress pipeline endpoint |
 | POST | `/api/recipe-chat` | Recipe-specific chat endpoint |
@@ -225,6 +227,12 @@ If `ollama list` works, backend is reachable.
 - `RECIPE_W_EMBED`
 - `RECIPE_W_FUZZY`
 - `RECIPE_TOP_K`
+
+### Admin (PDF ingest & community management)
+
+- Default credentials: username `admin`, password `admin` (override with `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET` in `.env` or compose).
+- After login in the UI, the browser stores a session token and sends `Authorization: Bearer <token>` on protected routes.
+- Regular users can still **ask questions** and **save field notes from chat**; only PDF upload/reindex/remove and **Manage community notes** require admin.
 
 ### Voice / Community (runtime-dependent)
 

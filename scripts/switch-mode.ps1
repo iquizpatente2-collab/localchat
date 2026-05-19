@@ -3,7 +3,7 @@ param(
   [string]$Mode
 )
 
-$repo = "C:\Users\Usama\Localchat"
+$repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $repo
 
 $envFile = if ($Mode -eq "dgx") { ".env.dgx" } else { ".env.local" }

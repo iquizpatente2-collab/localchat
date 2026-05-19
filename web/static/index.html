@@ -710,12 +710,63 @@
       user-select: none;
       border-bottom: 1px solid transparent;
       background: #e9edf4;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
     }
     .community-admin[open] summary {
       border-bottom-color: var(--border);
       background: #e2e8f2;
     }
     .community-admin summary::-webkit-details-marker { display: none; }
+    .community-admin-summary-title {
+      font-weight: 600;
+      color: var(--text);
+      flex: 1;
+      min-width: 0;
+    }
+    .community-admin-summary-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      flex-shrink: 0;
+    }
+    .community-admin-summary-hint {
+      font-size: 0.72rem;
+      font-weight: 400;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .community-admin-view-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.75rem;
+      height: 1.75rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: color-mix(in srgb, var(--panel) 90%, var(--accent) 10%);
+      color: var(--accent);
+      flex-shrink: 0;
+    }
+    .community-admin-view-icon svg {
+      width: 1.05rem;
+      height: 1.05rem;
+      display: block;
+    }
+    .community-admin[open] .community-admin-view-icon {
+      background: color-mix(in srgb, var(--accent) 22%, var(--panel) 78%);
+      border-color: color-mix(in srgb, var(--accent) 45%, var(--border) 55%);
+    }
+    body[data-theme="dark"] .community-admin-view-icon {
+      background: #1a2838;
+      border-color: #3d5a7a;
+      color: #7eb8ff;
+    }
+    body[data-theme="dark"] .community-admin[open] .community-admin-view-icon {
+      background: #243a52;
+    }
     .community-admin-body {
       padding: 0.55rem 0.65rem;
       display: flex;
@@ -874,6 +925,58 @@
     }
     body[data-theme="dark"] .community-admin-add {
       background: #131d2a;
+    }
+    .admin-gate {
+      margin-top: 0.5rem;
+      padding: 0.5rem 0.55rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--panel) 92%, var(--bg) 8%);
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    .admin-gate-title {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text);
+      margin: 0;
+    }
+    .admin-gate-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    .admin-gate-row input {
+      font-size: 0.82rem;
+      padding: 0.32rem 0.45rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      min-width: 7rem;
+    }
+    .admin-gate-row .btn-secondary {
+      margin-left: 0;
+    }
+    .admin-gate-status {
+      font-size: 0.76rem;
+      color: var(--muted);
+    }
+    .admin-gate-status.err {
+      color: #f07178;
+    }
+    .admin-gate-status.ok {
+      color: #5bd37a;
+    }
+    #adminProtectedSection {
+      display: none;
+      flex-direction: column;
+      gap: 0.45rem;
+    }
+    #adminProtectedSection.admin-visible {
+      display: flex;
     }
     /* Edit must stay visible next to Delete (avoid clipped/lost in narrow layouts) */
     .btn-community-edit {
@@ -1335,6 +1438,24 @@
                 <option value="it-IT">Voice: Italiano</option>
               </select>
             </div>
+            <div class="admin-gate" id="adminGate">
+              <p class="admin-gate-title" id="lblAdminGateTitle">Admin login (PDF &amp; community notes)</p>
+              <div id="adminLoggedOut">
+                <div class="admin-gate-row">
+                  <input type="text" id="adminUser" autocomplete="username" placeholder="Username" />
+                  <input type="password" id="adminPass" autocomplete="current-password" placeholder="Password" />
+                  <button type="button" id="btnAdminLogin" class="btn-secondary">Login</button>
+                </div>
+                <span class="admin-gate-status" id="adminLoginStatus"></span>
+              </div>
+              <div id="adminLoggedIn" style="display: none;">
+                <div class="admin-gate-row">
+                  <span class="admin-gate-status ok" id="lblAdminLoggedIn">Logged in as admin</span>
+                  <button type="button" id="btnAdminLogout" class="btn-secondary">Logout</button>
+                </div>
+              </div>
+            </div>
+            <div id="adminProtectedSection">
             <details class="pdf-drawer" open>
               <summary class="pdf-drawer-summary">
                 <span class="pdf-drawer-title" id="lblPdfTitle"><span class="pdf-drawer-chevron"></span> PDF &amp; index</span>
@@ -1348,7 +1469,18 @@
               </div>
             </details>
             <details class="community-admin" id="communityAdmin" style="display:none;">
-              <summary id="lblCommunitySummary">Manage community notes</summary>
+              <summary title="View and edit saved community notes">
+                <span class="community-admin-summary-title" id="lblCommunitySummary">Manage community notes</span>
+                <span class="community-admin-summary-actions">
+                  <span class="community-admin-summary-hint" id="lblCommunitySummaryHint">View &amp; edit</span>
+                  <span class="community-admin-view-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  </span>
+                </span>
+              </summary>
               <div class="community-admin-body">
                 <div class="community-admin-toolbar">
                   <button type="button" id="btnCommunityRefresh" class="btn-secondary">Refresh notes</button>
@@ -1373,6 +1505,7 @@
                 <div id="communityAdminList" class="community-admin-list"></div>
               </div>
             </details>
+            </div>
           </div>
           <div class="status" id="upStatus"></div>
         </div>
@@ -1407,6 +1540,135 @@
     /** null = main chat; same shape as sttContext for community */
     let whisperContext = null;
     let statusPopoverOpen = false;
+    const ADMIN_TOKEN_KEY = "localchat.adminToken";
+    let adminToken = "";
+    let adminLoggedIn = false;
+
+    function getAdminHeaders() {
+      const h = {};
+      if (adminToken) h.Authorization = `Bearer ${adminToken}`;
+      return h;
+    }
+
+    function adminFetch(url, opts = {}) {
+      const o = { ...opts };
+      o.headers = { ...(opts.headers || {}), ...getAdminHeaders() };
+      return fetch(url, o);
+    }
+
+    function updateCommunityAdminVisibility() {
+      const el = $("communityAdmin");
+      if (!el) return;
+      el.style.display = adminLoggedIn && serverCommunityEnabled ? "" : "none";
+    }
+
+    function applyAdminUiState(loggedIn) {
+      adminLoggedIn = !!loggedIn;
+      const prot = $("adminProtectedSection");
+      const out = $("adminLoggedOut");
+      const inn = $("adminLoggedIn");
+      if (prot) {
+        prot.classList.toggle("admin-visible", adminLoggedIn);
+      }
+      if (out) out.style.display = adminLoggedIn ? "none" : "";
+      if (inn) inn.style.display = adminLoggedIn ? "" : "none";
+      updateCommunityAdminVisibility();
+    }
+
+    async function checkAdminSession() {
+      try {
+        adminToken = sessionStorage.getItem(ADMIN_TOKEN_KEY) || "";
+      } catch (_) {
+        adminToken = "";
+      }
+      if (!adminToken) {
+        applyAdminUiState(false);
+        return;
+      }
+      try {
+        const r = await fetch("/api/admin/session", { headers: getAdminHeaders() });
+        const j = await r.json();
+        if (j.logged_in) {
+          applyAdminUiState(true);
+          return;
+        }
+      } catch (_) {}
+      adminToken = "";
+      try {
+        sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+      } catch (_) {}
+      applyAdminUiState(false);
+    }
+
+    async function adminLogin() {
+      const st = $("adminLoginStatus");
+      const user = ($("adminUser") && $("adminUser").value.trim()) || "";
+      const pass = ($("adminPass") && $("adminPass").value) || "";
+      if (!user || !pass) {
+        if (st) {
+          st.textContent = "Enter username and password.";
+          st.className = "admin-gate-status err";
+        }
+        return;
+      }
+      if (st) {
+        st.textContent = "Signing in…";
+        st.className = "admin-gate-status";
+      }
+      try {
+        const r = await fetch("/api/admin/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: user, password: pass }),
+        });
+        const raw = await r.text();
+        let j = {};
+        try {
+          j = raw ? JSON.parse(raw) : {};
+        } catch (_) {}
+        if (!r.ok) {
+          const detail =
+            j.detail !== undefined
+              ? typeof j.detail === "string"
+                ? j.detail
+                : JSON.stringify(j.detail)
+              : raw || r.statusText;
+          throw new Error(detail);
+        }
+        adminToken = String(j.token || "").trim();
+        if (!adminToken) throw new Error("No session token returned.");
+        try {
+          sessionStorage.setItem(ADMIN_TOKEN_KEY, adminToken);
+        } catch (_) {}
+        if ($("adminPass")) $("adminPass").value = "";
+        if (st) {
+          st.textContent = "";
+          st.className = "admin-gate-status";
+        }
+        applyAdminUiState(true);
+        refreshStatus();
+      } catch (e) {
+        adminToken = "";
+        if (st) {
+          st.textContent = String(e.message || e);
+          st.className = "admin-gate-status err";
+        }
+        applyAdminUiState(false);
+      }
+    }
+
+    function adminLogout() {
+      adminToken = "";
+      try {
+        sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+      } catch (_) {}
+      applyAdminUiState(false);
+      const st = $("adminLoginStatus");
+      if (st) {
+        st.textContent = "Logged out.";
+        st.className = "admin-gate-status";
+      }
+    }
 
     const I18N = {
       en: {
@@ -1432,7 +1694,14 @@
         ingestManual: "Ingest manual",
         useDocsPdf: "Use docs PDF",
         removeUpload: "Remove uploaded PDF",
+        adminGateTitle: "Admin login (PDF & community notes)",
+        adminLogin: "Login",
+        adminLogout: "Logout",
+        adminLoggedIn: "Logged in as admin",
+        adminUserPh: "Username",
+        adminPassPh: "Password",
         manageCommunity: "Manage community notes",
+        manageCommunityHint: "View & edit",
         refreshNotes: "Refresh notes",
         addCommunityNoteSection: "Add a new community note",
         savedCommunityNotes: "Saved notes",
@@ -1475,7 +1744,14 @@
         ingestManual: "Indicizza manuale",
         useDocsPdf: "Usa PDF docs",
         removeUpload: "Rimuovi PDF caricato",
+        adminGateTitle: "Accesso admin (PDF e note community)",
+        adminLogin: "Accedi",
+        adminLogout: "Esci",
+        adminLoggedIn: "Accesso admin attivo",
+        adminUserPh: "Utente",
+        adminPassPh: "Password",
         manageCommunity: "Gestisci note community",
+        manageCommunityHint: "Visualizza e modifica",
         refreshNotes: "Aggiorna note",
         addCommunityNoteSection: "Aggiungi una nuova nota community",
         savedCommunityNotes: "Note salvate",
@@ -1561,7 +1837,14 @@
       if ($("btnUpload")) $("btnUpload").textContent = t("ingestManual");
       if ($("btnUseDocs")) $("btnUseDocs").textContent = t("useDocsPdf");
       if ($("btnRemoveUpload")) $("btnRemoveUpload").textContent = t("removeUpload");
+      if ($("lblAdminGateTitle")) $("lblAdminGateTitle").textContent = t("adminGateTitle");
+      if ($("btnAdminLogin")) $("btnAdminLogin").textContent = t("adminLogin");
+      if ($("btnAdminLogout")) $("btnAdminLogout").textContent = t("adminLogout");
+      if ($("lblAdminLoggedIn")) $("lblAdminLoggedIn").textContent = t("adminLoggedIn");
+      if ($("adminUser")) $("adminUser").placeholder = t("adminUserPh");
+      if ($("adminPass")) $("adminPass").placeholder = t("adminPassPh");
       if ($("lblCommunitySummary")) $("lblCommunitySummary").textContent = t("manageCommunity");
+      if ($("lblCommunitySummaryHint")) $("lblCommunitySummaryHint").textContent = t("manageCommunityHint");
       if ($("lblCommunityAddSection")) $("lblCommunityAddSection").textContent = t("addCommunityNoteSection");
       if ($("lblCommunitySavedSection")) $("lblCommunitySavedSection").textContent = t("savedCommunityNotes");
       if ($("btnCommunityClearForm")) $("btnCommunityClearForm").textContent = t("clearNewNoteForm");
@@ -1621,7 +1904,7 @@
       st.textContent = "Loading…";
       st.className = "status";
       try {
-        const r = await fetch("/api/community?limit=200");
+        const r = await adminFetch("/api/community?limit=200");
         const raw = await r.text();
         let j = {};
         try { j = raw ? JSON.parse(raw) : {}; } catch (_) {}
@@ -1660,7 +1943,7 @@
               if (!window.confirm("Delete this community note?")) return;
               del.disabled = true;
               try {
-                const rr = await fetch(`/api/community/${encodeURIComponent(it.id)}`, { method: "DELETE" });
+                const rr = await adminFetch(`/api/community/${encodeURIComponent(it.id)}`, { method: "DELETE" });
                 const body = await rr.text();
                 let jj = {};
                 try { jj = body ? JSON.parse(body) : {}; } catch (_) {}
@@ -1737,7 +2020,7 @@
               }
               saveBtn.disabled = true;
               try {
-                const rr = await fetch(`/api/community/${encodeURIComponent(it.id)}`, {
+                const rr = await adminFetch(`/api/community/${encodeURIComponent(it.id)}`, {
                   method: "PUT",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify(payload),
@@ -1824,7 +2107,7 @@
         st.className = "status";
       }
       try {
-        const r = await fetch("/api/community-save", {
+        const r = await adminFetch("/api/community-save", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2345,7 +2628,7 @@
           : "";
         serverCommunityEnabled = !!j.community_enabled;
         serverWhisperAvailable = !!j.whisper_stt_available;
-        $("communityAdmin").style.display = serverCommunityEnabled ? "" : "none";
+        updateCommunityAdminVisibility();
         applyWhisperBtnState();
         setCommunityWhisperButtonsEnabled(true);
         setCommunitySttButtonsEnabled(true);
@@ -2364,7 +2647,7 @@
         );
       } catch (e) {
         setServerStatus("Could not reach /api/status", "err");
-        $("communityAdmin").style.display = "none";
+        updateCommunityAdminVisibility();
       }
     }
 
@@ -2413,7 +2696,7 @@
       const fd = new FormData();
       fd.append("file", f);
       try {
-        const r = await fetch("/api/upload", { method: "POST", body: fd });
+        const r = await adminFetch("/api/upload", { method: "POST", body: fd });
         const j = await r.json();
         if (!r.ok) throw new Error(j.detail || r.statusText);
         $("upStatus").textContent = `OK — indexed ${j.chunks} chunks from ${j.filename}`;
@@ -2431,7 +2714,7 @@
       $("upStatus").textContent = "Reindexing from docs PDF…";
       $("upStatus").className = "status";
       try {
-        const r = await fetch("/api/use-docs", { method: "POST" });
+        const r = await adminFetch("/api/use-docs", { method: "POST" });
         const j = await r.json();
         if (!r.ok) throw new Error(j.detail || r.statusText);
         $("upStatus").textContent = `OK — active index rebuilt from docs/${j.source} (${j.chunks} chunks).`;
@@ -2449,7 +2732,7 @@
       $("upStatus").textContent = "Removing uploaded manual…";
       $("upStatus").className = "status";
       try {
-        const r = await fetch("/api/upload", { method: "DELETE" });
+        const r = await adminFetch("/api/upload", { method: "DELETE" });
         const j = await r.json();
         if (!r.ok) throw new Error(j.detail || r.statusText);
         $("upStatus").textContent = j.removed
@@ -2792,6 +3075,18 @@
 
     initLanguage();
     initTheme();
+    checkAdminSession();
+    if ($("btnAdminLogin")) {
+      $("btnAdminLogin").addEventListener("click", adminLogin);
+    }
+    if ($("btnAdminLogout")) {
+      $("btnAdminLogout").addEventListener("click", adminLogout);
+    }
+    if ($("adminPass")) {
+      $("adminPass").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") adminLogin();
+      });
+    }
     fetch("/api/health")
       .then((r) => r.json())
       .then((j) => {

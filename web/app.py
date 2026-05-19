@@ -70,6 +70,8 @@ Env:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -80,7 +82,7 @@ from pathlib import Path
 
 import aiohttp
 import numpy as np
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -204,6 +206,64 @@ COMMUNITY_SAVE_QUESTION_MAX = 8000
 COMMUNITY_SAVE_COMMENT_MAX = 4000
 COMMUNITY_SAVE_AUTHOR_MAX = 120
 COMMUNITY_SAVE_ANSWER_MAX = 4000
+
+# Admin gate for PDF ingest and community note management (override via env in production).
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin").strip() or "admin"
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
+ADMIN_SESSION_SECRET = os.environ.get(
+    "ADMIN_SESSION_SECRET",
+    "localchat-admin-session-secret-change-me",
+)
+ADMIN_SESSION_TTL_S = max(300, int(os.environ.get("ADMIN_SESSION_TTL_S", "43200")))
+
+
+def _admin_issue_token() -> str:
+    exp = int(time.time()) + ADMIN_SESSION_TTL_S
+    payload = str(exp)
+    sig = hmac.new(
+        ADMIN_SESSION_SECRET.encode(),
+        payload.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{payload}.{sig}"
+
+
+def _admin_verify_token(token: str | None) -> bool:
+    if not token:
+        return False
+    try:
+        exp_s, sig = token.rsplit(".", 1)
+        exp = int(exp_s)
+        if time.time() > exp:
+            return False
+        expected = hmac.new(
+            ADMIN_SESSION_SECRET.encode(),
+            exp_s.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        return hmac.compare_digest(sig, expected)
+    except (ValueError, TypeError):
+        return False
+
+
+def _admin_token_from_headers(
+    authorization: str | None,
+    x_admin_token: str | None,
+) -> str | None:
+    if x_admin_token and x_admin_token.strip():
+        return x_admin_token.strip()
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return None
+
+
+async def require_admin(
+    authorization: str | None = Header(None),
+    x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+) -> None:
+    tok = _admin_token_from_headers(authorization, x_admin_token)
+    if not _admin_verify_token(tok):
+        raise HTTPException(status_code=401, detail="Admin login required")
 
 
 def _configured_chat_models() -> list[str]:
@@ -2118,6 +2178,11 @@ class CommunityUpdateBody(BaseModel):
     answer_snapshot: str = ""
 
 
+class AdminLoginBody(BaseModel):
+    username: str
+    password: str
+
+
 class RecipeChatBody(BaseModel):
     message: str
     mode: str = "grounded"
@@ -2314,6 +2379,21 @@ def create_app() -> FastAPI:
             except Exception as e:
                 print(f"[RAG] Auto-index failed: {e}")
 
+    @app.post("/api/admin/login")
+    async def admin_login(body: AdminLoginBody):
+        user = (body.username or "").strip()
+        if user != ADMIN_USERNAME or body.password != ADMIN_PASSWORD:
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+        return {"ok": True, "token": _admin_issue_token()}
+
+    @app.get("/api/admin/session")
+    async def admin_session(
+        authorization: str | None = Header(None),
+        x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+    ):
+        tok = _admin_token_from_headers(authorization, x_admin_token)
+        return {"ok": True, "logged_in": _admin_verify_token(tok)}
+
     @app.get("/api/health")
     async def health():
         try:
@@ -2451,7 +2531,10 @@ def create_app() -> FastAPI:
         return {"text": text, "backend": backend}
 
     @app.post("/api/upload")
-    async def upload(file: UploadFile = File(...)):
+    async def upload(
+        file: UploadFile = File(...),
+        _: None = Depends(require_admin),
+    ):
         if not file.filename or not file.filename.lower().endswith(".pdf"):
             raise HTTPException(400, "Please upload a .pdf file")
 
@@ -2474,7 +2557,7 @@ def create_app() -> FastAPI:
         }
 
     @app.delete("/api/upload")
-    async def remove_uploaded_manual():
+    async def remove_uploaded_manual(_: None = Depends(require_admin)):
         """Remove manually uploaded PDF from manuals/current_manual.pdf (does not change active index)."""
         try:
             existed = CURRENT_MANUAL_PATH.exists()
@@ -2489,7 +2572,7 @@ def create_app() -> FastAPI:
             raise HTTPException(500, f"Failed to remove uploaded manual: {e}") from e
 
     @app.post("/api/use-docs")
-    async def use_docs_pdf():
+    async def use_docs_pdf(_: None = Depends(require_admin)):
         """Rebuild active indexes from docs PDF and make docs the source of truth."""
         docs_pdf = _pick_docs_pdf()
         if docs_pdf is None:
@@ -2769,7 +2852,7 @@ def create_app() -> FastAPI:
         return {"ok": True, "id": rid}
 
     @app.get("/api/community")
-    async def community_list(limit: int = 100):
+    async def community_list(limit: int = 100, _: None = Depends(require_admin)):
         if community_store is None:
             raise HTTPException(
                 503,
@@ -2783,7 +2866,7 @@ def create_app() -> FastAPI:
         return {"ok": True, "count": len(rows), "items": rows}
 
     @app.delete("/api/community/{tip_id}")
-    async def community_delete(tip_id: str):
+    async def community_delete(tip_id: str, _: None = Depends(require_admin)):
         if community_store is None:
             raise HTTPException(
                 503,
@@ -2802,7 +2885,11 @@ def create_app() -> FastAPI:
         return {"ok": True, "deleted": True, "id": tid}
 
     @app.put("/api/community/{tip_id}")
-    async def community_update(tip_id: str, body: CommunityUpdateBody):
+    async def community_update(
+        tip_id: str,
+        body: CommunityUpdateBody,
+        _: None = Depends(require_admin),
+    ):
         if community_store is None:
             raise HTTPException(
                 503,
