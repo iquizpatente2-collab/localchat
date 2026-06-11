@@ -96,7 +96,8 @@ cp .env.dgx .env
 | Health shows `0.0.0.0:11434` | Your shell has `OLLAMA_HOST=0.0.0.0:11434` (Ollama **bind**). Run `unset OLLAMA_HOST` then `env -u OLLAMA_HOST docker compose up -d`. Use `http://172.17.0.1:11434` in `.env`, not `0.0.0.0`. |
 | `172.17.0.1` connection refused | Ollama not on docker bridge. Run `ss -tlnp \| grep 11434` — use that IP in `.env`, e.g. `OLLAMA_HOST=http://192.168.0.99:11434` |
 | `host.docker.internal` fails | Set in `.env`: `OLLAMA_HOST=http://172.17.0.1:11434` or your host’s LAN IP from `ss` |
-| PDF upload / **Use docs PDF** fails | Usually Ollama unreachable from container — fix health first (`curl http://127.0.0.1:8082/api/health` → `"ok":true`) |
+| PDF upload / **Use docs PDF** fails with HTTP 503 | Ollama queue full. In `.env`: `RAG_EMBED_CONCURRENCY=1`, `RAG_BUILD_RECIPE_INDEX=0`. On Ollama host: `OLLAMA_NUM_PARALLEL=2`, `OLLAMA_MAX_QUEUE=1024`. Rebuild Docker (`docker compose up --build -d`), click **Use docs PDF** once, wait 30–60 min. |
+| PDF upload / **Use docs PDF** fails (other) | Usually Ollama unreachable from container — fix health first (`curl http://127.0.0.1:8082/api/health` → `"ok":true`) |
 | No PDF in UI | Check `ls docs/*.pdf` on host; repo includes `docs/manuale_uso.pdf`. Click **Use docs PDF** (admin), not only upload. |
 | Permission denied on Docker | `sudo usermod -aG docker $USER` and re-login |
 | Chat fails | Ollama running; `ss -tlnp \| grep 11434` shows `0.0.0.0:11434` or `*:11434` |

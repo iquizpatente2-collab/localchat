@@ -464,6 +464,11 @@ if RAG_RECIPE_NORMALIZE_MODE not in {"auto", "all"}:
 RAG_RECIPE_MODEL = os.environ.get("RAG_RECIPE_MODEL", "").strip() or CHAT_MODEL
 RAG_RECIPE_MAX_PAGE_CHARS = int(os.environ.get("RAG_RECIPE_MAX_PAGE_CHARS", "12000"))
 RAG_RECIPE_CONCURRENCY = int(os.environ.get("RAG_RECIPE_CONCURRENCY", "12"))
+RAG_BUILD_RECIPE_INDEX = os.environ.get("RAG_BUILD_RECIPE_INDEX", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 RAG_RECIPE_TIMEOUT_S = float(os.environ.get("RAG_RECIPE_TIMEOUT_S", "300"))
 RAG_REPAIR_FULL_NORMALIZE = os.environ.get("RAG_REPAIR_FULL_NORMALIZE", "0").strip().lower() in {
     "1",
@@ -1092,25 +1097,27 @@ async def _build_index_from_pdf(
 
     print(
         f"[RAG] Ingesting {len(chunks)} chunks; embedding with {EMBED_MODEL} "
-        f"(concurrency={os.environ.get('RAG_EMBED_CONCURRENCY', '4')}) ..."
+        f"(concurrency={os.environ.get('RAG_EMBED_CONCURRENCY', '1')}) ..."
     )
-    recipes, recipe_embed_texts = build_recipe_embeddings_texts(pages, source_name)
     async with aiohttp.ClientSession() as session:
         texts = [c["text"] for c in chunks]
         emb = await embed_many(session, texts, EMBED_MODEL)
-        print(
-            f"[RAG] Chunk embeddings done ({len(texts)}). "
-            f"Recipe page embeddings ({len(recipe_embed_texts)}) ..."
-        )
-        recipe_emb = await embed_many(session, recipe_embed_texts, EMBED_MODEL)
+        print(f"[RAG] Chunk embeddings done ({len(texts)}).")
 
     store.set_data(chunks, emb, source_file=source_name)
     store.save()
-    recipe_catalog.set_recipes_with_embeddings(recipes, recipe_emb, source_name)
+    if RAG_BUILD_RECIPE_INDEX:
+        recipes, recipe_embed_texts = build_recipe_embeddings_texts(pages, source_name)
+        print(f"[RAG] Recipe page embeddings ({len(recipe_embed_texts)}) ...")
+        async with aiohttp.ClientSession() as session:
+            recipe_emb = await embed_many(session, recipe_embed_texts, EMBED_MODEL)
+        recipe_catalog.set_recipes_with_embeddings(recipes, recipe_emb, source_name)
+    else:
+        print("[RAG] Skipping recipe page embeddings (RAG_BUILD_RECIPE_INDEX=0).")
+        recipe_catalog.clear()
     _save_state(_file_signature(pdf_path))
-    print(
-        f"[RAG] Index saved: {len(chunks)} vectors; recipe catalog: {len(recipes)} pages"
-    )
+    rc_n = len(recipe_catalog.recipes) if RAG_BUILD_RECIPE_INDEX else 0
+    print(f"[RAG] Index saved: {len(chunks)} vectors; recipe catalog: {rc_n} pages")
     return len(chunks)
 
 

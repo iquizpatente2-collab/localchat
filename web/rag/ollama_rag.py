@@ -66,8 +66,19 @@ def _parse_embedding_vector(data: dict[str, Any]) -> np.ndarray | None:
     return None
 
 
+_embed_inflight: asyncio.Semaphore | None = None
+
+
+def _embed_inflight_sem() -> asyncio.Semaphore:
+    global _embed_inflight
+    if _embed_inflight is None:
+        cap = max(1, int(os.environ.get("OLLAMA_EMBED_MAX_INFLIGHT", "1")))
+        _embed_inflight = asyncio.Semaphore(cap)
+    return _embed_inflight
+
+
 def _embed_retry_limit() -> int:
-    return max(1, int(os.environ.get("RAG_EMBED_RETRY_MAX", "12")))
+    return max(1, int(os.environ.get("RAG_EMBED_RETRY_MAX", "24")))
 
 
 def _embed_retryable_status(status: int) -> bool:
@@ -76,37 +87,38 @@ def _embed_retryable_status(status: int) -> bool:
 
 async def ollama_embed(session: aiohttp.ClientSession, text: str, model: str) -> np.ndarray:
     """Try modern /api/embed first, then legacy /api/embeddings."""
-    text = _truncate_for_embedding(text or "", model)
-    base = _ollama_base()
-    endpoints: list[tuple[str, dict[str, Any]]] = [
-        (f"{base}/api/embed", {"model": model, "input": text}),
-        (f"{base}/api/embeddings", {"model": model, "prompt": text}),
-    ]
-    timeout_s = float(os.environ.get("RAG_EMBED_TIMEOUT_S", "300"))
-    timeout = aiohttp.ClientTimeout(total=timeout_s)
-    last_err = ""
-    max_tries = _embed_retry_limit()
-    for url, payload in endpoints:
-        for attempt in range(max_tries):
-            async with session.post(url, json=payload, timeout=timeout) as resp:
-                body = await resp.text()
-                if resp.status != 200:
-                    last_err = f"{url} -> HTTP {resp.status}: {body[:500]}"
-                    if _embed_retryable_status(resp.status) and attempt + 1 < max_tries:
-                        await asyncio.sleep(min(30.0, 1.5 * (2**attempt)))
-                        continue
-                    break
-                try:
-                    data = await resp.json()
-                except Exception:
-                    last_err = f"{url} -> invalid JSON"
-                    break
-            vec = _parse_embedding_vector(data)
-            if vec is not None:
-                return vec
-            last_err = f"{url} -> unexpected JSON keys: {list(data.keys())}"
-            break
-    raise RuntimeError(f"Embeddings failed. Last error: {last_err}")
+    async with _embed_inflight_sem():
+        text = _truncate_for_embedding(text or "", model)
+        base = _ollama_base()
+        endpoints: list[tuple[str, dict[str, Any]]] = [
+            (f"{base}/api/embed", {"model": model, "input": text}),
+            (f"{base}/api/embeddings", {"model": model, "prompt": text}),
+        ]
+        timeout_s = float(os.environ.get("RAG_EMBED_TIMEOUT_S", "300"))
+        timeout = aiohttp.ClientTimeout(total=timeout_s)
+        last_err = ""
+        max_tries = _embed_retry_limit()
+        for url, payload in endpoints:
+            for attempt in range(max_tries):
+                async with session.post(url, json=payload, timeout=timeout) as resp:
+                    body = await resp.text()
+                    if resp.status != 200:
+                        last_err = f"{url} -> HTTP {resp.status}: {body[:500]}"
+                        if _embed_retryable_status(resp.status) and attempt + 1 < max_tries:
+                            await asyncio.sleep(min(90.0, 2.0 * (2**attempt)))
+                            continue
+                        break
+                    try:
+                        data = await resp.json()
+                    except Exception:
+                        last_err = f"{url} -> invalid JSON"
+                        break
+                vec = _parse_embedding_vector(data)
+                if vec is not None:
+                    return vec
+                last_err = f"{url} -> unexpected JSON keys: {list(data.keys())}"
+                break
+        raise RuntimeError(f"Embeddings failed. Last error: {last_err}")
 
 
 async def ollama_chat(
@@ -174,7 +186,15 @@ async def ollama_chat_stream(
 
 
 def _embed_concurrency() -> int:
-    return max(1, int(os.environ.get("RAG_EMBED_CONCURRENCY", "4")))
+    return max(1, int(os.environ.get("RAG_EMBED_CONCURRENCY", "1")))
+
+
+def _embed_pause_s() -> float:
+    raw = os.environ.get("RAG_EMBED_PAUSE_S", "0.75").strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 0.75
 
 
 async def embed_many(
@@ -193,6 +213,7 @@ async def embed_many(
     if not texts:
         raise ValueError("embed_many: empty texts")
     conc = max(1, concurrency if concurrency is not None else _embed_concurrency())
+    pause = batch_pause if batch_pause > 0 else _embed_pause_s()
     if conc == 1:
         vecs: list[np.ndarray] = []
         n = len(texts)
@@ -201,8 +222,8 @@ async def embed_many(
             vecs.append(await ollama_embed(session, t, model))
             if (i + 1) == n or (i + 1) % log_every == 0:
                 print(f"[RAG] Embeddings progress: {i + 1}/{n}")
-            if batch_pause and i + 1 < n:
-                await asyncio.sleep(batch_pause)
+            if pause and i + 1 < n:
+                await asyncio.sleep(pause)
         return np.stack(vecs, axis=0)
 
     sem = asyncio.Semaphore(conc)
