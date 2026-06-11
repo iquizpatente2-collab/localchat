@@ -2645,10 +2645,23 @@
           : "No manual loaded yet — upload a PDF.",
           j.loaded ? "ok" : ""
         );
+        await refreshModelOptions();
       } catch (e) {
         setServerStatus("Could not reach /api/status", "err");
         updateCommunityAdminVisibility();
       }
+    }
+
+    function mergeModelLists(...lists) {
+      const out = [];
+      for (const list of lists) {
+        if (!Array.isArray(list)) continue;
+        for (const raw of list) {
+          const m = String(raw || "").trim();
+          if (m && !out.includes(m)) out.push(m);
+        }
+      }
+      return out;
     }
 
     async function refreshModelOptions() {
@@ -2656,31 +2669,65 @@
       if (!sel) return;
       const preferred = currentChatModel;
       let models = [];
+      let ollamaReachable = false;
+      let ollamaHost = "";
       try {
         const r = await fetch("/api/models");
         const j = await r.json();
-        models = Array.isArray(j.available) ? j.available : [];
+        const configured = Array.isArray(j.configured) ? j.configured : [];
+        const available = Array.isArray(j.available) ? j.available : [];
+        models = mergeModelLists(configured, available);
+        ollamaReachable = !!j.ollama_reachable;
+        ollamaHost = String(j.ollama_host || "").trim();
         if (!currentChatModel) currentChatModel = String(j.default || "").trim();
+        if (!models.length && !ollamaReachable && j.ollama_error) {
+          const st = $("chatStatus");
+          if (st && !st.textContent) {
+            st.textContent = `Cannot list models from Ollama (${ollamaHost || "remote"}). Using defaults from compose.`;
+            st.className = "status err";
+          }
+        }
       } catch (_) {
         // Fallback when /api/models is unavailable.
       }
       if (!models.length) {
         const s = await fetch("/api/status").then((x) => x.json()).catch(() => ({}));
         const fromStatus = Array.isArray(s.chat_model_options) ? s.chat_model_options : [];
-        models = fromStatus.length ? fromStatus : [String(s.chat_model || "").trim()].filter(Boolean);
+        models = mergeModelLists(fromStatus, [String(s.chat_model || "").trim()]);
         if (!currentChatModel) currentChatModel = String(s.chat_model || "").trim();
       }
       sel.innerHTML = "";
+      if (!models.length) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "(no models — check Ollama / lc-dgx)";
+        sel.appendChild(opt);
+        currentChatModel = "";
+        updateModelIndicator();
+        return;
+      }
       for (const m of models) {
         const opt = document.createElement("option");
         opt.value = m;
         opt.textContent = m;
         sel.appendChild(opt);
       }
-      const target = preferred || currentChatModel || (models[0] || "");
-      if (target) sel.value = target;
+      let target = preferred || currentChatModel || models[0] || "";
+      if (target && !models.includes(target)) {
+        const extra = document.createElement("option");
+        extra.value = target;
+        extra.textContent = `${target} (not on Ollama)`;
+        sel.insertBefore(extra, sel.firstChild);
+      }
+      if (!models.includes(target)) target = models[0];
+      sel.value = target;
       currentChatModel = sel.value || target;
       updateModelIndicator();
+      const label = document.querySelector(".composer-model-row .model-label");
+      if (label) {
+        const base = currentLang === "it" ? "Modello chat" : "Chat model";
+        label.textContent = ollamaReachable ? `${base} (${models.length})` : `${base} (${models.length}, Ollama offline)`;
+      }
     }
 
     $("btnUpload").onclick = async () => {

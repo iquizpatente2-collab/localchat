@@ -6,7 +6,30 @@ You need: **Docker**, **Git**, your **PDF** in `docs/`, and **Ollama reachable**
 
 ---
 
-## Linux (Ubuntu / Debian / etc.)
+## Linux — same as Windows (Ollama on this PC + Localchat in Docker)
+
+This matches **Windows `lc-local`**: Ollama runs on the machine; Docker only runs Localchat.
+
+```bash
+cd ~/localchat
+git pull origin main
+chmod +x scripts/setup-linux-full.sh
+./scripts/setup-linux-full.sh
+```
+
+That script installs Ollama (if needed), pulls `nomic-embed-text` + chat models, writes `.env`, and starts Docker.
+
+Custom models:
+
+```bash
+CHAT_MODEL=qwen3.6:latest EMBED_MODEL=nomic-embed-text ./scripts/setup-linux-full.sh
+```
+
+Then open **http://127.0.0.1:8082** → admin **admin** / **admin** → **Use docs PDF**.
+
+---
+
+## Linux (Ubuntu / Debian / etc.) — manual steps
 
 ### 1. Install Docker
 
@@ -44,7 +67,7 @@ ollama pull qwen3.5:9b
 
 ```bash
 cp env.dgx.example .env.dgx
-nano .env.dgx   # set OLLAMA_HOST=http://YOUR-DGX-IP:11435
+nano .env.dgx   # set OLLAMA_HOST=http://YOUR-DGX-IP:11434
 cp .env.dgx .env
 ./scripts/setup-other-pc.sh dgx
 ```

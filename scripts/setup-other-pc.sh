@@ -45,7 +45,7 @@ if [[ "$MODE" == "local" ]]; then
   if command -v ollama >/dev/null 2>&1; then
     echo "Ollama models (local mode):"
     ollama list || true
-    echo "If missing: ollama pull nomic-embed-text && ollama pull qwen3.5:9b"
+    echo "If missing: ollama pull nomic-embed-text && ollama pull qwen3.6:latest"
   else
     echo "Ollama not installed — install it or run: ./scripts/setup-other-pc.sh dgx"
   fi

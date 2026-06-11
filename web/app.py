@@ -2439,9 +2439,12 @@ def create_app() -> FastAPI:
     async def models():
         configured = _configured_chat_models()
         tags_models: list[str] = []
+        ollama_reachable = False
+        ollama_error = ""
+        ollama_host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"{os.environ.get('OLLAMA_HOST', 'http://127.0.0.1:11434').rstrip('/')}/api/tags") as resp:
+                async with session.get(f"{ollama_host}/api/tags", timeout=aiohttp.ClientTimeout(total=12)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         tags_models = [
@@ -2449,19 +2452,27 @@ def create_app() -> FastAPI:
                             for m in (data.get("models") or [])
                             if str(m.get("name") or "").strip()
                         ]
-        except Exception:
-            tags_models = []
+                        ollama_reachable = True
+                    else:
+                        ollama_error = f"Ollama /api/tags HTTP {resp.status}"
+        except Exception as e:
+            ollama_error = str(e)
 
         merged: list[str] = []
         for model in configured + tags_models:
             if model and model not in merged:
                 merged.append(model)
+        if not merged and configured:
+            merged = list(configured)
 
         return {
             "default": CHAT_MODEL,
             "fallback": CHAT_FALLBACK_MODEL,
             "configured": configured,
             "available": merged,
+            "ollama_host": ollama_host,
+            "ollama_reachable": ollama_reachable,
+            "ollama_error": ollama_error,
         }
 
     @app.get("/api/manual")
