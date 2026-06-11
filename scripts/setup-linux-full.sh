@@ -58,21 +58,26 @@ fi
 
 mkdir -p docs data
 
-# Docker bridge IP (container → host Ollama). Avoid host.docker.internal on some Linux setups.
-DOCKER_HOST_IP="${DOCKER_HOST_IP:-172.17.0.1}"
-if command -v ip >/dev/null 2>&1; then
-  GW="$(ip route show default 2>/dev/null | awk '{print $3; exit}')"
+# IP the container uses to reach Ollama on the host.
+# DGX/Ollama often binds 192.168.x.x:11434 only — not docker0 (172.17.0.1).
+OLLAMA_CLIENT_IP="${OLLAMA_CLIENT_IP:-}"
+if [[ -z "$OLLAMA_CLIENT_IP" ]] && command -v ss >/dev/null 2>&1; then
+  OLLAMA_CLIENT_IP="$(
+    ss -tlnp 2>/dev/null | awk '/:11434/ {print $4}' | sed 's/.*://;s/:11434$//' \
+      | grep -v '^127\.0\.0\.1$' | grep -v '^\*$' | head -1
+  )"
+fi
+if [[ -z "$OLLAMA_CLIENT_IP" ]] && command -v ip >/dev/null 2>&1; then
   BR="$(ip -4 route show dev docker0 2>/dev/null | awk '/proto kernel/ {print $1; exit}')"
   if [[ -n "$BR" ]]; then
-    DOCKER_HOST_IP="${BR%/*}"
-  elif [[ -n "$GW" ]]; then
-    DOCKER_HOST_IP="$GW"
+    OLLAMA_CLIENT_IP="${BR%/*}"
   fi
 fi
+OLLAMA_CLIENT_IP="${OLLAMA_CLIENT_IP:-172.17.0.1}"
 
 cat > .env.local <<EOF
 # Client URL for Localchat container (NOT Ollama's server bind address 0.0.0.0).
-OLLAMA_HOST=http://${DOCKER_HOST_IP}:11434
+OLLAMA_HOST=http://${OLLAMA_CLIENT_IP}:11434
 OLLAMA_CHAT_MODEL=$CHAT_MODEL
 OLLAMA_CHAT_FALLBACK=$CHAT_FALLBACK
 OLLAMA_EMBED_MODEL=$EMBED_MODEL
@@ -80,7 +85,7 @@ RAG_AUTO_DOCS=0
 EOF
 
 cp .env.local .env
-echo "Wrote .env.local and .env (OLLAMA_HOST=http://${DOCKER_HOST_IP}:11434)"
+echo "Wrote .env.local and .env (OLLAMA_HOST=http://${OLLAMA_CLIENT_IP}:11434)"
 
 if [[ -n "${OLLAMA_HOST:-}" && "${OLLAMA_HOST}" != http://* ]]; then
   echo "Note: shell OLLAMA_HOST=${OLLAMA_HOST} is Ollama's bind address — ignored for Docker (use .env)."
