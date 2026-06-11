@@ -21,6 +21,7 @@ python-multipart>=0.0.9
 pypdf>=5.0.0
 # pdfplumber-based manual pipeline (RAG_PDF_PIPELINE=1, default)
 pdfplumber>=0.11.0
+pymupdf>=1.24.0
 loguru>=0.7.0
 tqdm>=4.66.0
 tiktoken>=0.7.0

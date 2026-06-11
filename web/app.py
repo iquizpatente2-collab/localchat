@@ -117,6 +117,7 @@ from web.rag.recipe_progress import (
     split_user_completed_lines,
     steps_from_recipe,
 )
+from web.rag.manual_assets import ManualAssetCatalog
 from web.rag.store import VectorStore
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -124,6 +125,7 @@ DATA_DIR = ROOT / "data"
 MANUALS_DIR = DATA_DIR / "manuals"
 STORE_DIR = DATA_DIR / "rag_store"
 RECIPE_STORE_DIR = DATA_DIR / "recipe_store"
+MANUAL_ASSETS_DIR = DATA_DIR / "manual_assets"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 DOCS_DIR = ROOT / "docs"
 STATE_PATH = STORE_DIR / "source_state.json"
@@ -469,6 +471,11 @@ RAG_BUILD_RECIPE_INDEX = os.environ.get("RAG_BUILD_RECIPE_INDEX", "1").strip().l
     "true",
     "yes",
 }
+RAG_EXTRACT_FIGURES = os.environ.get("RAG_EXTRACT_FIGURES", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+}
 RAG_RECIPE_TIMEOUT_S = float(os.environ.get("RAG_RECIPE_TIMEOUT_S", "300"))
 RAG_REPAIR_FULL_NORMALIZE = os.environ.get("RAG_REPAIR_FULL_NORMALIZE", "0").strip().lower() in {
     "1",
@@ -531,6 +538,7 @@ Hard rules:
 
 store = VectorStore(STORE_DIR)
 recipe_catalog = RecipeCatalog(RECIPE_STORE_DIR)
+manual_assets = ManualAssetCatalog(MANUAL_ASSETS_DIR)
 _store_lock = asyncio.Lock()
 _recipe_embed_cache: OrderedDict[str, np.ndarray] = OrderedDict()
 _recipe_session_ctx: OrderedDict[str, dict] = OrderedDict()
@@ -802,6 +810,7 @@ def _clear_runtime_indexes() -> None:
     recipe_catalog.embeddings = None
     recipe_catalog.source_file = None
     recipe_catalog._faiss_index = None
+    manual_assets.clear()
     _recipe_embed_cache.clear()
 
 
@@ -1094,6 +1103,23 @@ async def _build_index_from_pdf(
 
     if not chunks:
         raise RuntimeError(f"No chunks after processing {pdf_path.name}")
+
+    if RAG_EXTRACT_FIGURES:
+        try:
+            from web.rag.manual_assets import extract_and_attach_figures
+
+            extract_and_attach_figures(
+                pdf_path,
+                MANUAL_ASSETS_DIR,
+                chunks,
+                source_name=source_name,
+                catalog=manual_assets,
+            )
+            n_fig = len(manual_assets.assets)
+            n_linked = sum(1 for c in chunks if c.get("image_ids"))
+            print(f"[RAG] Figures: {n_fig} extracted; {n_linked} chunk(s) with linked images")
+        except Exception as e:
+            print(f"[RAG] Figure extraction skipped: {e}")
 
     print(
         f"[RAG] Ingesting {len(chunks)} chunks; embedding with {EMBED_MODEL} "
@@ -2350,6 +2376,11 @@ def create_app() -> FastAPI:
         else:
             print("[RAG] No recipe catalog on disk — ingest a PDF to build it.")
 
+        if manual_assets.load():
+            print(f"[RAG] Loaded {len(manual_assets.assets)} manual figure(s)")
+        else:
+            print("[RAG] No manual figures on disk — re-ingest PDF to extract images.")
+
         _init_community_store()
 
         if not RAG_AUTO_DOCS:
@@ -2447,6 +2478,8 @@ def create_app() -> FastAPI:
                 "community_tips": int(community_store.count()) if community_store else 0,
                 "whisper_stt_available": bool(WHISPER_STT_ENABLED and _whisper_lib_available()),
                 "manual_pdf_available": bool(_resolve_active_manual_pdf_path()),
+                "figure_count": len(manual_assets.assets),
+                "figures_enabled": RAG_EXTRACT_FIGURES,
             }
 
     @app.get("/api/models")
@@ -2505,6 +2538,17 @@ def create_app() -> FastAPI:
             filename=path.name,
             content_disposition_type="inline",
         )
+
+    @app.get("/api/manual-asset/{asset_id}")
+    async def serve_manual_asset(asset_id: str):
+        """Serve an extracted figure PNG linked to a manual topic/chunk."""
+        aid = (asset_id or "").strip()
+        if not re.fullmatch(r"p\d{3}-[\w\-]+", aid):
+            raise HTTPException(400, "Invalid asset id")
+        path = manual_assets.file_path(aid)
+        if path is None:
+            raise HTTPException(404, "Figure not found")
+        return FileResponse(path, media_type="image/png", filename=path.name)
 
     @app.post("/api/transcribe")
     async def transcribe_audio(
@@ -2717,6 +2761,7 @@ def create_app() -> FastAPI:
         hits_focused: list[tuple[dict, float]],
         comm_for_display: list[dict],
     ) -> dict:
+        hit_chunks = [h[0] for h in hits_focused]
         return {
             "answer": answer,
             "model_used": used_model,
@@ -2726,9 +2771,11 @@ def create_app() -> FastAPI:
                     "page": h[0].get("page"),
                     "page_end": h[0].get("page_end"),
                     "score": round(h[1], 4),
+                    "topic_id": h[0].get("topic_id"),
                 }
                 for h in hits_focused
             ],
+            "images": manual_assets.resolve_for_chunks(hit_chunks),
             "community_matches": _community_matches_api(comm_for_display),
         }
 

@@ -26,6 +26,8 @@ def pipeline_json_to_store_chunks(chunks_json: list[dict[str, Any]]) -> list[dic
                 "chunk_type": meta.get("type") or "",
                 "procedure_id": meta.get("procedure_id"),
                 "has_table": bool(meta.get("has_table")),
+                "topic_id": "",
+                "image_ids": [],
             }
         )
     return out

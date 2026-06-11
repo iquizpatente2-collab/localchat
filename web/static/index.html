@@ -314,6 +314,35 @@
       background: #0f1a12;
       color: #9bc49e;
     }
+    .manual-figure-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      margin-top: 0.55rem;
+      width: 100%;
+    }
+    .manual-figure {
+      margin: 0;
+      max-width: min(100%, 320px);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #0c1218;
+    }
+    .manual-figure img {
+      display: block;
+      width: 100%;
+      height: auto;
+      max-height: 240px;
+      object-fit: contain;
+      background: #0a0e14;
+    }
+    .manual-figure figcaption {
+      font-size: 0.72rem;
+      color: var(--muted);
+      padding: 0.35rem 0.5rem;
+      line-height: 1.3;
+    }
     .msg-community-slot {
       margin-top: 0.35rem;
       margin-left: 0.15rem;
@@ -2272,6 +2301,34 @@
       return { bubble, meta, communitySlot };
     }
 
+    function fillManualFigures(metaEl, data) {
+      const imgs = (data && data.images) || [];
+      if (!imgs.length) return;
+      const grid = document.createElement("div");
+      grid.className = "manual-figure-grid";
+      for (const im of imgs.slice(0, 6)) {
+        const fig = document.createElement("figure");
+        fig.className = "manual-figure";
+        const el = document.createElement("img");
+        el.src = im.url || `/api/manual-asset/${encodeURIComponent(im.id || "")}`;
+        el.alt = im.caption || im.section || `Page ${im.page || "?"}`;
+        el.loading = "lazy";
+        fig.appendChild(el);
+        const label = (im.caption || im.section || "").trim();
+        if (label) {
+          const cap = document.createElement("figcaption");
+          cap.textContent = label;
+          fig.appendChild(cap);
+        } else if (im.page) {
+          const cap = document.createElement("figcaption");
+          cap.textContent = `Page ${im.page}`;
+          fig.appendChild(cap);
+        }
+        grid.appendChild(fig);
+      }
+      metaEl.appendChild(grid);
+    }
+
     function fillSourceChips(metaEl, data) {
       metaEl.textContent = "";
       const wrap = document.createElement("div");
@@ -2296,6 +2353,7 @@
         wrap.appendChild(chip);
       }
       if (wrap.children.length) metaEl.appendChild(wrap);
+      fillManualFigures(metaEl, data);
       const cm = (data && data.community_matches) || [];
       if (cm.length) {
         const cw = document.createElement("div");
@@ -2636,12 +2694,16 @@
           ? ` · community notes ${j.community_tips != null ? j.community_tips : 0}`
           : "";
         const wz = serverWhisperAvailable ? " · whisper STT" : "";
+        const fg =
+          j.loaded && j.figure_count != null && j.figure_count > 0
+            ? ` · figures ${j.figure_count}`
+            : "";
         if (!currentChatModel) {
           currentChatModel = String(j.chat_model || "").trim();
         }
         setServerStatus(
           j.loaded
-          ? `Index ready: ${j.chunks} chunks from ${j.source_file || "unknown"} · embed ${j.embed_model} · assistant ${j.chat_model}${rc}${ct}${wz}`
+          ? `Index ready: ${j.chunks} chunks from ${j.source_file || "unknown"} · embed ${j.embed_model} · assistant ${j.chat_model}${fg}${rc}${ct}${wz}`
           : "No index yet — admin: Use docs PDF or ingest a manual (embedding can take many minutes).",
           j.loaded ? "ok" : ""
         );
