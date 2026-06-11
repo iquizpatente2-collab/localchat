@@ -93,9 +93,12 @@ cp .env.dgx .env
 
 | Symptom | Fix |
 |---------|-----|
+| Health shows `0.0.0.0:11434` | Your shell has `OLLAMA_HOST=0.0.0.0:11434` (Ollama **bind**). Run `unset OLLAMA_HOST` then `env -u OLLAMA_HOST docker compose up -d`. Use `http://172.17.0.1:11434` in `.env`, not `0.0.0.0`. |
 | `host.docker.internal` fails | Set in `.env`: `OLLAMA_HOST=http://172.17.0.1:11434` or your host’s LAN IP |
+| PDF upload / **Use docs PDF** fails | Usually Ollama unreachable from container — fix health first (`curl http://127.0.0.1:8082/api/health` → `"ok":true`) |
+| No PDF in UI | Check `ls docs/*.pdf` on host; repo includes `docs/manuale_uso.pdf`. Click **Use docs PDF** (admin), not only upload. |
 | Permission denied on Docker | `sudo usermod -aG docker $USER` and re-login |
-| Chat fails | Ollama running; firewall allows port 11434 from Docker bridge |
+| Chat fails | Ollama running; `ss -tlnp \| grep 11434` shows `0.0.0.0:11434` or `*:11434` |
 | Remote DGX | `OLLAMA_HOST=http://dgx-ip:port`; Ollama must listen on `0.0.0.0`, not only `127.0.0.1` |
 
 ---

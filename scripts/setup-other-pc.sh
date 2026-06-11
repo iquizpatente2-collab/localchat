@@ -54,7 +54,7 @@ else
 fi
 
 echo "Building and starting Docker…"
-docker compose up --build -d
+env -u OLLAMA_HOST docker compose up --build -d
 
 sleep 4
 echo "Health check:"

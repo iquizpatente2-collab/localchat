@@ -58,8 +58,21 @@ fi
 
 mkdir -p docs data
 
+# Docker bridge IP (container → host Ollama). Avoid host.docker.internal on some Linux setups.
+DOCKER_HOST_IP="${DOCKER_HOST_IP:-172.17.0.1}"
+if command -v ip >/dev/null 2>&1; then
+  GW="$(ip route show default 2>/dev/null | awk '{print $3; exit}')"
+  BR="$(ip -4 route show dev docker0 2>/dev/null | awk '/proto kernel/ {print $1; exit}')"
+  if [[ -n "$BR" ]]; then
+    DOCKER_HOST_IP="${BR%/*}"
+  elif [[ -n "$GW" ]]; then
+    DOCKER_HOST_IP="$GW"
+  fi
+fi
+
 cat > .env.local <<EOF
-OLLAMA_HOST=http://host.docker.internal:11434
+# Client URL for Localchat container (NOT Ollama's server bind address 0.0.0.0).
+OLLAMA_HOST=http://${DOCKER_HOST_IP}:11434
 OLLAMA_CHAT_MODEL=$CHAT_MODEL
 OLLAMA_CHAT_FALLBACK=$CHAT_FALLBACK
 OLLAMA_EMBED_MODEL=$EMBED_MODEL
@@ -67,7 +80,11 @@ RAG_AUTO_DOCS=0
 EOF
 
 cp .env.local .env
-echo "Wrote .env.local and .env for local mode"
+echo "Wrote .env.local and .env (OLLAMA_HOST=http://${DOCKER_HOST_IP}:11434)"
+
+if [[ -n "${OLLAMA_HOST:-}" && "${OLLAMA_HOST}" != http://* ]]; then
+  echo "Note: shell OLLAMA_HOST=${OLLAMA_HOST} is Ollama's bind address — ignored for Docker (use .env)."
+fi
 
 if compgen -G "docs/*.pdf" >/dev/null; then
   echo "PDF: $(ls -1 docs/*.pdf | head -1)"
@@ -76,7 +93,8 @@ else
 fi
 
 echo "Starting Localchat (Docker)…"
-docker compose up --build -d
+# Shell OLLAMA_HOST=0.0.0.0:11434 (common on DGX) must not override .env for compose.
+env -u OLLAMA_HOST docker compose up --build -d
 
 sleep 5
 echo ""
