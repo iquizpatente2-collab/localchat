@@ -22,20 +22,36 @@ def _embed_cap_tokens(model: str) -> int:
     ml = (model or "").lower()
     # Stay below published limits; server tokenizer can count higher than cl100k.
     if "nomic-embed" in ml or ml.startswith("nomic") or "nomic_embed" in ml:
-        return 7000
+        # Ollama's tokenizer often stricter than cl100k; 2048 is safe on all builds.
+        return 2048
     if "qwen3-embedding" in ml or "qwen3_embedding" in ml:
-        return 7000
+        return 2048
     if "snowflake" in ml or "arctic-embed" in ml:
-        return 7000
+        return 2048
     # minilm, e5-small, many Ollama embedding ports — very small context
     return 512
 
 
-def _truncate_for_embedding(text: str, model: str) -> str:
+def _default_embed_char_cap(model: str) -> int:
+    raw = os.environ.get("RAG_EMBED_INPUT_MAX_CHARS", "").strip()
+    if raw.isdigit():
+        return max(256, int(raw))
+    ml = (model or "").lower()
+    if "nomic" in ml or "qwen3-embed" in ml:
+        return 6000
+    return 2048
+
+
+def _truncate_for_embedding(
+    text: str,
+    model: str,
+    *,
+    max_tok_override: int | None = None,
+) -> str:
     text = text or ""
     if not text:
         return text
-    max_tok = _embed_cap_tokens(model)
+    max_tok = max_tok_override if max_tok_override is not None else _embed_cap_tokens(model)
     # Avoid huge encode() cost on pathological strings
     pre_cap = min(len(text), max(12_000, max_tok * 12))
     text = text[:pre_cap]
@@ -49,10 +65,11 @@ def _truncate_for_embedding(text: str, model: str) -> str:
     except Exception:
         # ~4 chars/token heuristic when tiktoken missing or encode fails
         text = text[: max(max_tok * 4, 512)]
-    # Final hard ceiling: some servers still stricter than cl100k estimate
-    char_ceiling = int(os.environ.get("RAG_EMBED_INPUT_MAX_CHARS", "0"))
-    if char_ceiling > 0:
-        text = text[:char_ceiling]
+    # Hard character ceiling — Ollama may count tokens higher than cl100k for technical PDF text.
+    char_ceiling = _default_embed_char_cap(model)
+    if max_tok_override is not None:
+        char_ceiling = min(char_ceiling, max(max_tok_override * 3, 512))
+    text = text[:char_ceiling]
     return text
 
 
@@ -85,39 +102,60 @@ def _embed_retryable_status(status: int) -> bool:
     return status in (429, 503, 502, 504)
 
 
+def _embed_context_too_long(status: int, body: str) -> bool:
+    if status not in (400, 500):
+        return False
+    bl = (body or "").lower()
+    return "context length" in bl or "too long" in bl or "maximum context" in bl
+
+
 async def ollama_embed(session: aiohttp.ClientSession, text: str, model: str) -> np.ndarray:
     """Try modern /api/embed first, then legacy /api/embeddings."""
     async with _embed_inflight_sem():
-        text = _truncate_for_embedding(text or "", model)
         base = _ollama_base()
-        endpoints: list[tuple[str, dict[str, Any]]] = [
-            (f"{base}/api/embed", {"model": model, "input": text}),
-            (f"{base}/api/embeddings", {"model": model, "prompt": text}),
-        ]
+        raw = text or ""
+        tok_limit = _embed_cap_tokens(model)
         timeout_s = float(os.environ.get("RAG_EMBED_TIMEOUT_S", "300"))
         timeout = aiohttp.ClientTimeout(total=timeout_s)
         last_err = ""
         max_tries = _embed_retry_limit()
-        for url, payload in endpoints:
-            for attempt in range(max_tries):
-                async with session.post(url, json=payload, timeout=timeout) as resp:
-                    body = await resp.text()
-                    if resp.status != 200:
-                        last_err = f"{url} -> HTTP {resp.status}: {body[:500]}"
-                        if _embed_retryable_status(resp.status) and attempt + 1 < max_tries:
-                            await asyncio.sleep(min(90.0, 2.0 * (2**attempt)))
-                            continue
-                        break
-                    try:
-                        data = await resp.json()
-                    except Exception:
-                        last_err = f"{url} -> invalid JSON"
-                        break
-                vec = _parse_embedding_vector(data)
-                if vec is not None:
-                    return vec
-                last_err = f"{url} -> unexpected JSON keys: {list(data.keys())}"
-                break
+
+        for shrink in range(5):
+            limit = max(64, tok_limit // (2**shrink))
+            chunk = _truncate_for_embedding(raw, model, max_tok_override=limit)
+            endpoints: list[tuple[str, dict[str, Any]]] = [
+                (f"{base}/api/embed", {"model": model, "input": chunk}),
+                (f"{base}/api/embeddings", {"model": model, "prompt": chunk}),
+            ]
+            too_long = False
+            for url, payload in endpoints:
+                for attempt in range(max_tries):
+                    async with session.post(url, json=payload, timeout=timeout) as resp:
+                        body = await resp.text()
+                        if resp.status != 200:
+                            last_err = f"{url} -> HTTP {resp.status}: {body[:500]}"
+                            if _embed_context_too_long(resp.status, body):
+                                too_long = True
+                                break
+                            if _embed_retryable_status(resp.status) and attempt + 1 < max_tries:
+                                await asyncio.sleep(min(90.0, 2.0 * (2**attempt)))
+                                continue
+                            break
+                        try:
+                            data = await resp.json()
+                        except Exception:
+                            last_err = f"{url} -> invalid JSON"
+                            break
+                    vec = _parse_embedding_vector(data)
+                    if vec is not None:
+                        return vec
+                    last_err = f"{url} -> unexpected JSON keys: {list(data.keys())}"
+                    break
+                if too_long:
+                    break
+            if too_long:
+                continue
+
         raise RuntimeError(f"Embeddings failed. Last error: {last_err}")
 
 

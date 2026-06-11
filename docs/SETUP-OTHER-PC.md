@@ -97,6 +97,7 @@ cp .env.dgx .env
 | `172.17.0.1` connection refused | Ollama not on docker bridge. Run `ss -tlnp \| grep 11434` — use that IP in `.env`, e.g. `OLLAMA_HOST=http://192.168.0.99:11434` |
 | `host.docker.internal` fails | Set in `.env`: `OLLAMA_HOST=http://172.17.0.1:11434` or your host’s LAN IP from `ss` |
 | PDF upload / **Use docs PDF** fails with HTTP 503 | Ollama queue full. In `.env`: `RAG_EMBED_CONCURRENCY=1`, `RAG_BUILD_RECIPE_INDEX=0`. On Ollama host: `OLLAMA_NUM_PARALLEL=2`, `OLLAMA_MAX_QUEUE=1024`. Rebuild Docker (`docker compose up --build -d`), click **Use docs PDF** once, wait 30–60 min. |
+| **context length** / embed HTTP 500 | Chunk too long for `nomic-embed-text`. In `.env`: `RAG_EMBED_INPUT_MAX_TOKENS=2048`, `RAG_EMBED_INPUT_MAX_CHARS=6000`, then `docker compose up --build -d` and re-ingest. |
 | PDF upload / **Use docs PDF** fails (other) | Usually Ollama unreachable from container — fix health first (`curl http://127.0.0.1:8082/api/health` → `"ok":true`) |
 | No PDF in UI | Check `ls docs/*.pdf` on host; repo includes `docs/manuale_uso.pdf`. Click **Use docs PDF** (admin), not only upload. |
 | Permission denied on Docker | `sudo usermod -aG docker $USER` and re-login |
