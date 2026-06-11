@@ -2566,6 +2566,10 @@ def create_app() -> FastAPI:
             try:
                 n = await _build_index_from_pdf(dest, source_name=file.filename)
             except Exception as e:
+                import traceback
+
+                print(f"[RAG] Manual indexing failed: {e}")
+                traceback.print_exc()
                 raise HTTPException(400, f"Manual indexing failed: {e}") from e
 
         return {
@@ -2601,6 +2605,10 @@ def create_app() -> FastAPI:
                 _clear_runtime_indexes()
                 n = await _build_index_from_pdf(docs_pdf, source_name=docs_pdf.name)
             except Exception as e:
+                import traceback
+
+                print(f"[RAG] Docs reindex failed: {e}")
+                traceback.print_exc()
                 raise HTTPException(500, f"Docs reindex failed: {e}") from e
         return {"ok": True, "chunks": n, "source": docs_pdf.name}
 
