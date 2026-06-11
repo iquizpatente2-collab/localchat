@@ -2642,7 +2642,7 @@
         setServerStatus(
           j.loaded
           ? `Index ready: ${j.chunks} chunks from ${j.source_file || "unknown"} · embed ${j.embed_model} · assistant ${j.chat_model}${rc}${ct}${wz}`
-          : "No manual loaded yet — upload a PDF.",
+          : "No index yet — admin: Use docs PDF or ingest a manual (embedding can take many minutes).",
           j.loaded ? "ok" : ""
         );
         await refreshModelOptions();

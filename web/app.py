@@ -1090,11 +1090,18 @@ async def _build_index_from_pdf(
     if not chunks:
         raise RuntimeError(f"No chunks after processing {pdf_path.name}")
 
-    print(f"[RAG] Ingesting {len(chunks)} chunks; embedding with {EMBED_MODEL} ...")
+    print(
+        f"[RAG] Ingesting {len(chunks)} chunks; embedding with {EMBED_MODEL} "
+        f"(concurrency={os.environ.get('RAG_EMBED_CONCURRENCY', '4')}) ..."
+    )
     recipes, recipe_embed_texts = build_recipe_embeddings_texts(pages, source_name)
     async with aiohttp.ClientSession() as session:
         texts = [c["text"] for c in chunks]
         emb = await embed_many(session, texts, EMBED_MODEL)
+        print(
+            f"[RAG] Chunk embeddings done ({len(texts)}). "
+            f"Recipe page embeddings ({len(recipe_embed_texts)}) ..."
+        )
         recipe_emb = await embed_many(session, recipe_embed_texts, EMBED_MODEL)
 
     store.set_data(chunks, emb, source_file=source_name)

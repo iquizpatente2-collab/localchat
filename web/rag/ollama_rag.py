@@ -66,30 +66,46 @@ def _parse_embedding_vector(data: dict[str, Any]) -> np.ndarray | None:
     return None
 
 
+def _embed_retry_limit() -> int:
+    return max(1, int(os.environ.get("RAG_EMBED_RETRY_MAX", "12")))
+
+
+def _embed_retryable_status(status: int) -> bool:
+    return status in (429, 503, 502, 504)
+
+
 async def ollama_embed(session: aiohttp.ClientSession, text: str, model: str) -> np.ndarray:
     """Try modern /api/embed first, then legacy /api/embeddings."""
     text = _truncate_for_embedding(text or "", model)
     base = _ollama_base()
-    attempts: list[tuple[str, dict[str, Any]]] = [
+    endpoints: list[tuple[str, dict[str, Any]]] = [
         (f"{base}/api/embed", {"model": model, "input": text}),
         (f"{base}/api/embeddings", {"model": model, "prompt": text}),
     ]
+    timeout_s = float(os.environ.get("RAG_EMBED_TIMEOUT_S", "300"))
+    timeout = aiohttp.ClientTimeout(total=timeout_s)
     last_err = ""
-    for url, payload in attempts:
-        async with session.post(url, json=payload) as resp:
-            body = await resp.text()
-            if resp.status != 200:
-                last_err = f"{url} -> HTTP {resp.status}: {body[:500]}"
-                continue
-            try:
-                data = await resp.json()
-            except Exception:
-                last_err = f"{url} -> invalid JSON"
-                continue
-        vec = _parse_embedding_vector(data)
-        if vec is not None:
-            return vec
-        last_err = f"{url} -> unexpected JSON keys: {list(data.keys())}"
+    max_tries = _embed_retry_limit()
+    for url, payload in endpoints:
+        for attempt in range(max_tries):
+            async with session.post(url, json=payload, timeout=timeout) as resp:
+                body = await resp.text()
+                if resp.status != 200:
+                    last_err = f"{url} -> HTTP {resp.status}: {body[:500]}"
+                    if _embed_retryable_status(resp.status) and attempt + 1 < max_tries:
+                        await asyncio.sleep(min(30.0, 1.5 * (2**attempt)))
+                        continue
+                    break
+                try:
+                    data = await resp.json()
+                except Exception:
+                    last_err = f"{url} -> invalid JSON"
+                    break
+            vec = _parse_embedding_vector(data)
+            if vec is not None:
+                return vec
+            last_err = f"{url} -> unexpected JSON keys: {list(data.keys())}"
+            break
     raise RuntimeError(f"Embeddings failed. Last error: {last_err}")
 
 
@@ -158,7 +174,7 @@ async def ollama_chat_stream(
 
 
 def _embed_concurrency() -> int:
-    return max(1, int(os.environ.get("RAG_EMBED_CONCURRENCY", "16")))
+    return max(1, int(os.environ.get("RAG_EMBED_CONCURRENCY", "4")))
 
 
 async def embed_many(
@@ -179,19 +195,31 @@ async def embed_many(
     conc = max(1, concurrency if concurrency is not None else _embed_concurrency())
     if conc == 1:
         vecs: list[np.ndarray] = []
+        n = len(texts)
+        log_every = max(1, int(os.environ.get("RAG_EMBED_PROGRESS_EVERY", "25")))
         for i, t in enumerate(texts):
             vecs.append(await ollama_embed(session, t, model))
-            if batch_pause and i + 1 < len(texts):
+            if (i + 1) == n or (i + 1) % log_every == 0:
+                print(f"[RAG] Embeddings progress: {i + 1}/{n}")
+            if batch_pause and i + 1 < n:
                 await asyncio.sleep(batch_pause)
         return np.stack(vecs, axis=0)
 
     sem = asyncio.Semaphore(conc)
     n = len(texts)
     out: list[np.ndarray | None] = [None] * n
+    done = 0
+    progress_lock = asyncio.Lock()
+    log_every = max(1, int(os.environ.get("RAG_EMBED_PROGRESS_EVERY", "25")))
 
     async def one(i: int, t: str) -> None:
+        nonlocal done
         async with sem:
             out[i] = await ollama_embed(session, t, model)
+        async with progress_lock:
+            done += 1
+            if done == n or done % log_every == 0:
+                print(f"[RAG] Embeddings progress: {done}/{n}")
 
     await asyncio.gather(*(one(i, t) for i, t in enumerate(texts)))
     return np.stack([out[i] for i in range(n)], axis=0)
